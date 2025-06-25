@@ -1,6 +1,6 @@
 import time
 
-import aiosqlite
+from .protocols import Connection
 
 
 class PoolConnection:
@@ -9,7 +9,7 @@ class PoolConnection:
     and its metadata.
     """
 
-    def __init__(self, connection: aiosqlite.Connection, connection_id: str):
+    def __init__(self, connection: Connection, connection_id: str):
         self.raw_connection = connection
         self.id = connection_id
         self.created_at = time.time()

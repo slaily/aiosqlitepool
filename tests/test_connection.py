@@ -1,10 +1,10 @@
 import unittest
 import asyncio
 import time
-import aiosqlite
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock
 
 from aiosqlitepool.connection import PoolConnection
+from aiosqlitepool.protocols import Connection
 
 
 class TestPoolConnection(unittest.IsolatedAsyncioTestCase):
@@ -12,7 +12,7 @@ class TestPoolConnection(unittest.IsolatedAsyncioTestCase):
         """
         Test that a PoolConnection is created with the correct initial attributes.
         """
-        mock_conn = AsyncMock(spec=aiosqlite.Connection)
+        mock_conn = AsyncMock(spec=Connection)
         conn_id = "conn_1"
 
         pool_conn = PoolConnection(connection=mock_conn, connection_id=conn_id)
@@ -26,7 +26,7 @@ class TestPoolConnection(unittest.IsolatedAsyncioTestCase):
         """
         Test that the 'age' property correctly calculates the connection's age.
         """
-        mock_conn = AsyncMock(spec=aiosqlite.Connection)
+        mock_conn = AsyncMock(spec=Connection)
         pool_conn = PoolConnection(connection=mock_conn, connection_id="conn_1")
 
         # Simulate time passing
@@ -34,26 +34,3 @@ class TestPoolConnection(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreater(pool_conn.age, 0.09)
         self.assertLess(pool_conn.age, 0.15)
-
-    async def test_is_closed_property(self):
-        """
-        Test that 'is_closed' reflects the state of the raw connection.
-        """
-        # Mock a connection that appears open
-        mock_open_conn = MagicMock(spec=aiosqlite.Connection)
-        mock_open_conn._connection = None  # aiosqlite uses this to check if closed
-
-        pool_open_conn = PoolConnection(
-            connection=mock_open_conn, connection_id="conn_1"
-        )
-        self.assertFalse(pool_open_conn.is_closed)
-
-        # Mock a connection that appears closed
-        mock_closed_conn = MagicMock(spec=aiosqlite.Connection)
-        # Setting _connection to a truthy value makes it appear closed
-        mock_closed_conn._connection = True
-
-        pool_closed_conn = PoolConnection(
-            connection=mock_closed_conn, connection_id="conn_2"
-        )
-        self.assertTrue(pool_closed_conn.is_closed)

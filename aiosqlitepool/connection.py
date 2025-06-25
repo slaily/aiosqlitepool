@@ -1,18 +1,6 @@
-import asyncio
-import aiosqlite
-
-import logging
 import time
-from enum import Enum
 
-logger = logging.getLogger(__name__)
-
-
-class ConnectionState(Enum):
-    """Tracks if a connection is available or in use."""
-
-    AVAILABLE = "available"
-    IN_USE = "in_use"
+import aiosqlite
 
 
 class PoolConnection:

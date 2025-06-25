@@ -1,0 +1,14 @@
+*.pyc
+.mypy_cache
+.vscode
+.idea
+poetry.lock
+dist
+htmlcov
+*.egg-info
+.coverage*
+coverage.xml
+site
+*.db
+.cache
+.venv*

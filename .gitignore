@@ -3,6 +3,7 @@
 .vscode
 .idea
 poetry.lock
+uv.lock
 dist
 htmlcov
 *.egg-info

@@ -21,9 +21,7 @@ classifiers = [
     "Topic :: Database",
     "Framework :: AsyncIO",
 ]
-dependencies = [
-    "aiosqlite",
-]
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/your-username/aiosqlitepool"

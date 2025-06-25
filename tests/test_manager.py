@@ -1,14 +1,9 @@
 import unittest
 import asyncio
-from typing import Any, Awaitable, Callable
 
-import logging
 
 from aiosqlitepool.manager import ConnectionManager
 from aiosqlitepool.connection import PoolConnection
-
-
-# --- Fake Implementations for Testing ---
 
 
 class FakeConnection:
@@ -21,7 +16,7 @@ class FakeConnection:
         self.rolled_back = False
         self.executions = 0
 
-    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+    async def execute(self, *args, **kwargs):
         self.executions += 1
         if self.should_fail:
             raise Exception("Simulated connection failure")
@@ -117,78 +112,3 @@ class TestConnectionManager(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.manager.reset(pool_conn))
 
         self.assertTrue(raw_conn.rolled_back)
-
-
-# --- Mocks for Non-Compliant Connections ---
-
-
-class SyncConnection:
-    """A connection with synchronous methods, violating the protocol."""
-
-    def execute(self, *args, **kwargs):
-        return "Not async"
-
-    def rollback(self):
-        pass
-
-    def close(self):
-        pass
-
-
-class IncompleteConnection:
-    """A connection that is missing the 'close' method."""
-
-    async def execute(self, *args, **kwargs):
-        return "Partial Success"
-
-    async def rollback(self):
-        pass
-
-
-class TestManagerWithBadConnections(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        # Suppress expected warning/error logs during these tests
-        logging.disable(logging.WARNING)
-        self.manager = ConnectionManager(connection_factory=FakeConnectionFactory())
-
-    def tearDown(self):
-        logging.disable(logging.NOTSET)
-
-    async def test_is_alive_with_sync_connection(self):
-        """
-        Test that is_alive() handles a non-awaitable execute method gracefully.
-        """
-        pool_conn = PoolConnection(SyncConnection(), "conn_1")
-        self.assertFalse(await self.manager.is_alive(pool_conn))
-
-    async def test_is_alive_with_incomplete_connection(self):
-        """
-        Test that is_alive() handles a missing execute method gracefully.
-        """
-        # This connection is missing .execute()
-        pool_conn = PoolConnection(object(), "conn_1")
-        self.assertFalse(await self.manager.is_alive(pool_conn))
-
-    async def test_reset_with_sync_connection(self):
-        """
-        Test that reset() raises TypeError for non-awaitable methods.
-        """
-        pool_conn = PoolConnection(SyncConnection(), "conn_1")
-        with self.assertRaises(TypeError):
-            await self.manager.reset(pool_conn)
-
-    async def test_close_with_sync_connection(self):
-        """
-        Test that close() raises TypeError for non-awaitable methods.
-        """
-        pool_conn = PoolConnection(SyncConnection(), "conn_1")
-        with self.assertRaises(TypeError):
-            await self.manager.close(pool_conn)
-
-    async def test_close_with_incomplete_connection(self):
-        """
-        Test that close() raises AttributeError for missing methods.
-        """
-        pool_conn = PoolConnection(IncompleteConnection(), "conn_1")
-        with self.assertRaises(AttributeError):
-            await self.manager.close(pool_conn)

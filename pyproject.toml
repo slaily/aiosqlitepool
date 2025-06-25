@@ -1,7 +1,31 @@
 [project]
 name = "aiosqlitepool"
 version = "0.1.0"
-description = "Add your description here"
+description = "A robust, high-performance asynchronous connection pool for SQLite."
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = []
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Your Name", email = "your@email.com" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Framework :: AsyncIO",
+]
+dependencies = [
+    "aiosqlite",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-username/aiosqlitepool"
+"Bug Tracker" = "https://github.com/your-username/aiosqlitepool/issues"
+"Source Code" = "https://github.com/your-username/aiosqlitepool"

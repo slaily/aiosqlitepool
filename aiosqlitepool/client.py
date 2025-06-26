@@ -29,5 +29,4 @@ class SQLiteConnectionPool:
             await self._pool.release(conn)
 
     async def close(self):
-        """Close the pool and all its connections."""
         await self._pool.close()

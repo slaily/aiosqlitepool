@@ -17,7 +17,7 @@ class Pool:
     def __init__(
         self,
         connection_factory: Callable[[], Awaitable[Connection]],
-        pool_size: int = 20,
+        pool_size: int = 5,
         timeout: float = 30.0,
         max_idle_time: float = 3600.0,
         max_consecutive_failures: int = 5,
@@ -36,12 +36,10 @@ class Pool:
 
     @property
     def is_closed(self) -> bool:
-        """Whether the pool is closed."""
         return self._closed_event.is_set()
 
     @property
     def size(self) -> int:
-        """Current number of available connections in the pool."""
         return self._queue.qsize()
 
     async def _validate_and_prepare_connection(self, conn: PoolConnection) -> bool:
@@ -57,14 +55,12 @@ class Pool:
         return True
 
     async def _cleanup_connection(self, conn: PoolConnection):
-        """Close connection and remove from tracking. Always succeeds."""
         try:
             await conn.close()
         finally:
             self._all_connections.pop(conn.id, None)
 
     async def _try_get_from_queue(self) -> PoolConnection:
-        """Try to get a valid connection from queue, cleaning up invalid ones."""
         if self.is_closed:
             return None
 
@@ -80,7 +76,6 @@ class Pool:
                 return None
 
     async def _create_connection_if_space(self) -> PoolConnection:
-        """Create new connection if under pool limit, ensuring it is valid."""
         async with self._lock:
             if len(self._all_connections) < self._pool_size:
                 conn = await PoolConnection.create(self._connection_factory)
@@ -92,7 +87,6 @@ class Pool:
         return None
 
     async def _wait_for_connection_or_close(self) -> PoolConnection:
-        """Wait for connection to be available or pool to close."""
         get_task = asyncio.create_task(self._queue.get())
         close_task = asyncio.create_task(self._closed_event.wait())
 
@@ -126,7 +120,6 @@ class Pool:
             raise
 
     async def _acquire_internal(self) -> PoolConnection:
-        """Internal acquire method without timeout wrapper."""
         if self.is_closed:
             raise RuntimeError("Pool is closed.")
 
@@ -169,7 +162,6 @@ class Pool:
                 await self._cleanup_connection(conn)
 
     async def acquire(self) -> PoolConnection:
-        """Acquire a connection from the pool."""
         try:
             return await asyncio.wait_for(
                 self._acquire_internal(), timeout=self._timeout
@@ -180,7 +172,6 @@ class Pool:
             )
 
     async def release(self, conn: PoolConnection):
-        """Release a connection back to the pool."""
         if self.is_closed:
             async with self._lock:
                 if conn.id in self._all_connections:
@@ -215,7 +206,6 @@ class Pool:
                 await self._cleanup_connection(conn)
 
     async def close(self):
-        """Close the pool and all connections."""
         if self.is_closed:
             return
 

@@ -17,43 +17,28 @@ class PoolConnection:
     async def create(
         cls, connection_factory: Callable[[], Awaitable[Connection]]
     ) -> "PoolConnection":
-        """
-        Factory method to create a new PoolConnection.
-        All driver exceptions bubble up unchanged - no try/except wrapper.
-        """
         cls._connection_counter += 1
         connection_id = f"conn_{cls._connection_counter}"
         raw_conn = await connection_factory()
         return cls(connection=raw_conn, connection_id=connection_id)
 
     def mark_as_in_use(self) -> None:
-        """Mark the connection as actively in use."""
         self.idle_since = None
 
     def mark_as_idle(self) -> None:
-        """Mark the connection as idle."""
         self.idle_since = time.time()
 
     @property
     def idle_time(self) -> float:
-        """The time the connection has been idle in seconds."""
         if self.idle_since is None:
             return 0.0
         return time.time() - self.idle_since
 
     async def is_alive(self) -> bool:
-        """
-        Check if this connection is still usable.
-        This method will re-raise driver exceptions on failure.
-        """
         await self.raw_connection.execute("SELECT 1")
         return True
 
     async def reset(self) -> bool:
-        """
-        Reset connection state for reuse.
-        This method will re-raise driver exceptions on failure.
-        """
         await self.raw_connection.rollback()
         return True
 

@@ -27,3 +27,8 @@ dependencies = []
 Homepage = "https://github.com/your-username/aiosqlitepool"
 "Bug Tracker" = "https://github.com/your-username/aiosqlitepool/issues"
 "Source Code" = "https://github.com/your-username/aiosqlitepool"
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.20.0",
+]

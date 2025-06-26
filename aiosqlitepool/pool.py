@@ -1,81 +1,65 @@
 import asyncio
 import logging
-from typing import Dict
+from typing import Dict, Callable, Awaitable
 
 from .connection import PoolConnection
-from .manager import ConnectionManager
+from .protocols import Connection
 
-logger = logging.getLogger(__name__)
+
+log = logging.getLogger(__name__)
+
+
+class PoolUnhealthyError(RuntimeError):
+    """Raised when the pool's circuit breaker trips."""
 
 
 class Pool:
-    """
-    A pure pooling engine that manages connections and handles acquisition logic.
-
-    Philosophy: "Fail Fast for Users, Fail Safe for Pool"
-    - User-facing operations preserve original driver exceptions
-    - Internal operations handle errors gracefully with specific logging
-    """
-
     def __init__(
         self,
-        manager: ConnectionManager,
-        pool_size: int = 10,
+        connection_factory: Callable[[], Awaitable[Connection]],
+        pool_size: int = 20,
         timeout: float = 30.0,
-        max_idle_time: float = 600.0,
+        max_idle_time: float = 3600.0,
+        max_consecutive_failures: int = 5,
     ):
-        self._manager = manager
+        self._connection_factory = connection_factory
         self._pool_size = pool_size
         self._timeout = timeout
         self._max_idle_time = max_idle_time
+        self._max_consecutive_failures = max_consecutive_failures
 
         self._queue: asyncio.Queue[PoolConnection] = asyncio.Queue(maxsize=pool_size)
         self._all_connections: Dict[str, PoolConnection] = {}
         self._lock = asyncio.Lock()
         self._closed_event = asyncio.Event()
-
-    @property
-    def size(self) -> int:
-        """Current number of available connections in the pool."""
-        return self._queue.qsize() if not self.is_closed else 0
-
-    @property
-    def total_connections(self) -> int:
-        """Total number of connections (both idle and active)."""
-        return len(self._all_connections)
+        self._consecutive_failures = 0
 
     @property
     def is_closed(self) -> bool:
         """Whether the pool is closed."""
         return self._closed_event.is_set()
 
+    @property
+    def size(self) -> int:
+        """Current number of available connections in the pool."""
+        return self._queue.qsize()
+
     async def _validate_and_prepare_connection(self, conn: PoolConnection) -> bool:
         """Validate connection and mark as in-use if valid, close if invalid."""
-        try:
-            # Check idle time with small tolerance for race conditions
-            if conn.idle_time > (self._max_idle_time - 0.1):
-                logger.debug("Connection %s exceeded max idle time", conn.id)
-                return False
-
-            # Validate connection with timeout
-            if not await asyncio.wait_for(self._manager.is_alive(conn), timeout=5.0):
-                return False
-
-            conn.mark_as_in_use()
-            return True
-
-        except Exception as e:
-            logger.debug(
-                "Connection %s validation failed: %s", conn.id, type(e).__name__
-            )
+        # Check idle time with small tolerance for race conditions
+        if conn.idle_time > (self._max_idle_time - 0.1):
             return False
+
+        # Validate connection with timeout
+        await conn.is_alive()
+        conn.mark_as_in_use()
+
+        return True
 
     async def _cleanup_connection(self, conn: PoolConnection):
         """Close connection and remove from tracking. Always succeeds."""
         try:
-            await self._manager.close(conn)
-        except Exception as e:
-            logger.debug("Error closing connection %s: %s", conn.id, type(e).__name__)
+            await conn.close()
         finally:
             self._all_connections.pop(conn.id, None)
 
@@ -96,10 +80,12 @@ class Pool:
                 return None
 
     async def _create_connection_if_space(self) -> PoolConnection:
-        """Create new connection if under pool limit."""
+        """Create new connection if under pool limit, ensuring it is valid."""
         async with self._lock:
             if len(self._all_connections) < self._pool_size:
-                conn = await self._manager.create()
+                conn = await PoolConnection.create(self._connection_factory)
+                # Run a health check on the new connection before adding it.
+                await conn.is_alive()
                 self._all_connections[conn.id] = conn
                 conn.mark_as_in_use()
                 return conn
@@ -145,19 +131,37 @@ class Pool:
             raise RuntimeError("Pool is closed.")
 
         while True:
-            # Try to get from queue first
-            conn = await self._try_get_from_queue()
-            if conn:
-                return conn
+            try:
+                # Try to get from queue first
+                conn = await self._try_get_from_queue()
+                if conn:
+                    self._consecutive_failures = 0  # Reset on success
+                    return conn
 
-            # Try to create new connection
-            conn = await self._create_connection_if_space()
-            if conn:
-                return conn
+                # Try to create new connection
+                conn = await self._create_connection_if_space()
+                if conn:
+                    self._consecutive_failures = 0  # Reset on success
+                    return conn
+
+            except Exception as e:
+                self._consecutive_failures += 1
+                log.debug("Connection acquisition failed.", exc_info=e)
+                if self._consecutive_failures >= self._max_consecutive_failures:
+                    msg = (
+                        f"Pool has exceeded max consecutive failures "
+                        f"({self._max_consecutive_failures})."
+                    )
+                    raise PoolUnhealthyError(msg) from e
+
+                # If we are here, we are in the self-healing phase.
+                # The failed connection was already cleaned up. Continue the loop.
+                continue
 
             # Wait for connection or pool close
             conn = await self._wait_for_connection_or_close()
             if await self._validate_and_prepare_connection(conn):
+                self._consecutive_failures = 0  # Reset on success
                 return conn
 
             # Connection was invalid, clean up and retry
@@ -189,59 +193,46 @@ class Pool:
 
         # Try to reset connection
         try:
-            reset_ok = await asyncio.wait_for(
-                self._manager.reset(conn), timeout=min(self._timeout, 5.0)
-            )
+            await asyncio.wait_for(conn.reset(), timeout=min(self._timeout, 5.0))
         except Exception as e:
-            logger.warning(
-                "Reset failed for connection %s: %s", conn.id, type(e).__name__
+            log.warning(
+                "Connection %s failed to reset and will be discarded.",
+                conn.id,
+                exc_info=e,
             )
-            reset_ok = False
-
-        if not reset_ok:
+            # Connection couldn't be reset, clean it up
             async with self._lock:
                 await self._cleanup_connection(conn)
             return
 
-        # Return to pool
+        # Connection successfully reset, return to pool
         conn.mark_as_idle()
         try:
             self._queue.put_nowait(conn)
         except asyncio.QueueFull:
+            # Pool is full (shouldn't happen), clean up connection
             async with self._lock:
                 await self._cleanup_connection(conn)
 
     async def close(self):
-        """Close all connections in the pool."""
+        """Close the pool and all connections."""
         if self.is_closed:
             return
 
         self._closed_event.set()
 
-        try:
-            await asyncio.wait_for(self._close_all_connections(), timeout=30.0)
-        except asyncio.TimeoutError:
-            logger.warning("Pool close timed out after 30s")
+        # Clear the queue
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
-    async def _close_all_connections(self):
-        """Close all connections with proper cleanup."""
         async with self._lock:
-            # Drain queue
-            remaining = []
-            while not self._queue.empty():
-                try:
-                    remaining.append(self._queue.get_nowait())
-                except asyncio.QueueEmpty:
-                    break
-
-            # Add all tracked connections
-            remaining.extend(self._all_connections.values())
-
-            # Close all in parallel
-            if remaining:
-                await asyncio.gather(
-                    *[self._cleanup_connection(conn) for conn in remaining],
-                    return_exceptions=True,
-                )
-
+            connections = list(self._all_connections.values())
             self._all_connections.clear()
+
+        # Close all connections concurrently
+        close_tasks = [conn.close() for conn in connections]
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)

@@ -39,19 +39,18 @@ class TestPoolConnection(unittest.IsolatedAsyncioTestCase):
     async def test_creation_and_basic_attributes(self):
         """Test that a PoolConnection is created with correct basic attributes."""
         mock_conn = SQLiteConnection()
-        conn_id = "conn_1"
-
-        pool_conn = PoolConnection(connection=mock_conn, connection_id=conn_id)
+        pool_conn = PoolConnection(connection=mock_conn)
 
         self.assertIs(pool_conn.raw_connection, mock_conn)
-        self.assertEqual(pool_conn.id, conn_id)
+        self.assertIsInstance(pool_conn.id, str)
+        self.assertTrue(len(pool_conn.id) > 0)
         self.assertIsNone(pool_conn.idle_since)
         self.assertEqual(pool_conn.idle_time, 0.0)
 
     async def test_idle_time_tracking(self):
         """Test that idle time is tracked correctly."""
         mock_conn = SQLiteConnection()
-        pool_conn = PoolConnection(connection=mock_conn, connection_id="conn_1")
+        pool_conn = PoolConnection(connection=mock_conn)
 
         # Initially not idle
         self.assertEqual(pool_conn.idle_time, 0.0)
@@ -80,12 +79,13 @@ class TestPoolConnection(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(pool_conn, PoolConnection)
         self.assertIsInstance(pool_conn.raw_connection, SQLiteConnection)
-        self.assertTrue(pool_conn.id.startswith("conn_"))
+        self.assertIsInstance(pool_conn.id, str)
+        self.assertTrue(len(pool_conn.id) > 0)
 
     async def test_is_alive_healthy_connection(self):
         """Test health check on a healthy connection."""
         mock_conn = SQLiteConnection()
-        pool_conn = PoolConnection(connection=mock_conn, connection_id="conn_1")
+        pool_conn = PoolConnection(connection=mock_conn)
 
         result = await pool_conn.is_alive()
 
@@ -95,16 +95,15 @@ class TestPoolConnection(unittest.IsolatedAsyncioTestCase):
     async def test_is_alive_failing_connection(self):
         """Test health check on a failing connection."""
         mock_conn = SQLiteConnection(should_fail=True)
-        pool_conn = PoolConnection(connection=mock_conn, connection_id="conn_1")
+        pool_conn = PoolConnection(connection=mock_conn)
 
-        result = await pool_conn.is_alive()
-
-        self.assertFalse(result)
+        with self.assertRaises(Exception):
+            await pool_conn.is_alive()
 
     async def test_reset_successful(self):
         """Test successful connection reset."""
         mock_conn = SQLiteConnection()
-        pool_conn = PoolConnection(connection=mock_conn, connection_id="conn_1")
+        pool_conn = PoolConnection(connection=mock_conn)
 
         result = await pool_conn.reset()
 
@@ -114,16 +113,15 @@ class TestPoolConnection(unittest.IsolatedAsyncioTestCase):
     async def test_reset_failing(self):
         """Test connection reset failure."""
         mock_conn = SQLiteConnection(should_fail=True)
-        pool_conn = PoolConnection(connection=mock_conn, connection_id="conn_1")
+        pool_conn = PoolConnection(connection=mock_conn)
 
-        result = await pool_conn.reset()
-
-        self.assertFalse(result)
+        with self.assertRaises(Exception):
+            await pool_conn.reset()
 
     async def test_close_successful(self):
         """Test successful connection close."""
         mock_conn = SQLiteConnection()
-        pool_conn = PoolConnection(connection=mock_conn, connection_id="conn_1")
+        pool_conn = PoolConnection(connection=mock_conn)
 
         await pool_conn.close()
 
@@ -132,7 +130,7 @@ class TestPoolConnection(unittest.IsolatedAsyncioTestCase):
     async def test_close_failing_doesnt_raise(self):
         """Test that connection close failure doesn't raise exceptions."""
         mock_conn = SQLiteConnection(should_fail=True)
-        pool_conn = PoolConnection(connection=mock_conn, connection_id="conn_1")
+        pool_conn = PoolConnection(connection=mock_conn)
 
         # Should not raise despite mock_conn.close() failing
         await pool_conn.close()

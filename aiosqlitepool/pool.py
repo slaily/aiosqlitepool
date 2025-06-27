@@ -18,18 +18,18 @@ class Pool:
         self,
         connection_factory: Callable[[], Awaitable[Connection]],
         pool_size: int = 5,
-        timeout: float = 30.0,
+        acquisition_timeout: float = 30.0,
         max_idle_time: float = 3600.0,
         max_consecutive_failures: int = 5,
     ):
         self._connection_factory = connection_factory
         self._pool_size = pool_size
-        self._timeout = timeout
+        self._acquisition_timeout = acquisition_timeout
         self._max_idle_time = max_idle_time
         self._max_consecutive_failures = max_consecutive_failures
 
         self._queue: asyncio.Queue[PoolConnection] = asyncio.Queue(maxsize=pool_size)
-        self._all_connections: Dict[str, PoolConnection] = {}
+        self._connection_registry: Dict[str, PoolConnection] = {}
         self._lock = asyncio.Lock()
         self._closed_event = asyncio.Event()
         self._consecutive_failures = 0
@@ -42,46 +42,111 @@ class Pool:
     def size(self) -> int:
         return self._queue.qsize()
 
-    async def _validate_and_prepare_connection(self, conn: PoolConnection) -> bool:
-        """Validate connection and mark as in-use if valid, close if invalid."""
-        # Check idle time with small tolerance for race conditions
+    async def acquire(self) -> PoolConnection:
+        try:
+            return await asyncio.wait_for(
+                self._run_acquisition_cycle(), timeout=self._acquisition_timeout
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"Pool timeout: Failed to acquire connection within {self._acquisition_timeout} seconds"
+            )
+
+    async def release(self, conn: PoolConnection):
+        if self.is_closed:
+            async with self._lock:
+                if conn.id in self._connection_registry:
+                    await self._decommission_connection(conn)
+            return
+
+        async with self._lock:
+            if conn.id not in self._connection_registry:
+                return
+
+        # Try to reset connection
+        try:
+            await asyncio.wait_for(
+                conn.reset(), timeout=min(self._acquisition_timeout, 5.0)
+            )
+        except Exception as e:
+            log.warning(
+                "Connection %s failed to reset and will be discarded.",
+                conn.id,
+                exc_info=e,
+            )
+            # Connection couldn't be reset, clean it up
+            async with self._lock:
+                await self._decommission_connection(conn)
+            return
+
+        # Connection successfully reset, return to pool
+        conn.mark_as_idle()
+        try:
+            self._queue.put_nowait(conn)
+        except asyncio.QueueFull:
+            # Pool is full (shouldn't happen), clean up connection
+            async with self._lock:
+                await self._decommission_connection(conn)
+
+    async def close(self):
+        if self.is_closed:
+            return
+
+        self._closed_event.set()
+
+        # Clear the queue
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+        async with self._lock:
+            connections = list(self._connection_registry.values())
+            self._connection_registry.clear()
+
+        # Close all connections concurrently
+        close_tasks = [conn.close() for conn in connections]
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+
+    async def _claim_if_healthy(self, conn: PoolConnection) -> bool:
         if conn.idle_time > (self._max_idle_time - 0.1):
             return False
 
-        # Validate connection with timeout
         await conn.is_alive()
         conn.mark_as_in_use()
 
         return True
 
-    async def _cleanup_connection(self, conn: PoolConnection):
+    async def _decommission_connection(self, conn: PoolConnection):
         try:
             await conn.close()
         finally:
-            self._all_connections.pop(conn.id, None)
+            self._connection_registry.pop(conn.id, None)
 
-    async def _try_get_from_queue(self) -> PoolConnection:
+    async def _poll_for_healthy_connection(self) -> PoolConnection:
         if self.is_closed:
             return None
 
         while True:
             try:
                 conn = self._queue.get_nowait()
-                if await self._validate_and_prepare_connection(conn):
+                if await self._claim_if_healthy(conn):
                     return conn
                 # Invalid connection - clean up and try again
                 async with self._lock:
-                    await self._cleanup_connection(conn)
+                    await self._decommission_connection(conn)
             except asyncio.QueueEmpty:
                 return None
 
-    async def _create_connection_if_space(self) -> PoolConnection:
+    async def _try_provision_new_connection(self) -> PoolConnection:
         async with self._lock:
-            if len(self._all_connections) < self._pool_size:
+            if len(self._connection_registry) < self._pool_size:
                 conn = await PoolConnection.create(self._connection_factory)
                 # Run a health check on the new connection before adding it.
                 await conn.is_alive()
-                self._all_connections[conn.id] = conn
+                self._connection_registry[conn.id] = conn
                 conn.mark_as_in_use()
                 return conn
         return None
@@ -119,110 +184,45 @@ class Pool:
                         pass
             raise
 
-    async def _acquire_internal(self) -> PoolConnection:
+    async def _run_acquisition_cycle(self) -> PoolConnection:
         if self.is_closed:
             raise RuntimeError("Pool is closed.")
 
         while True:
             try:
-                # Try to get from queue first
-                conn = await self._try_get_from_queue()
+                conn = await self._poll_for_healthy_connection()
                 if conn:
-                    self._consecutive_failures = 0  # Reset on success
+                    async with self._lock:
+                        self._consecutive_failures = 0  # Reset on success
                     return conn
 
-                # Try to create new connection
-                conn = await self._create_connection_if_space()
+                conn = await self._try_provision_new_connection()
                 if conn:
-                    self._consecutive_failures = 0  # Reset on success
+                    async with self._lock:
+                        self._consecutive_failures = 0  # Reset on success
                     return conn
 
             except Exception as e:
-                self._consecutive_failures += 1
-                log.debug("Connection acquisition failed.", exc_info=e)
-                if self._consecutive_failures >= self._max_consecutive_failures:
-                    msg = (
-                        f"Pool has exceeded max consecutive failures "
-                        f"({self._max_consecutive_failures})."
-                    )
-                    raise PoolUnhealthyError(msg) from e
+                async with self._lock:
+                    self._consecutive_failures += 1
+                    log.debug("Connection acquisition failed.", exc_info=e)
+                    if self._consecutive_failures >= self._max_consecutive_failures:
+                        msg = (
+                            f"Pool has exceeded max consecutive failures "
+                            f"({self._max_consecutive_failures})."
+                        )
+                        raise PoolUnhealthyError(msg) from e
 
                 # If we are here, we are in the self-healing phase.
                 # The failed connection was already cleaned up. Continue the loop.
                 continue
-
             # Wait for connection or pool close
             conn = await self._wait_for_connection_or_close()
-            if await self._validate_and_prepare_connection(conn):
-                self._consecutive_failures = 0  # Reset on success
+            if await self._claim_if_healthy(conn):
+                async with self._lock:
+                    self._consecutive_failures = 0  # Reset on success
                 return conn
 
             # Connection was invalid, clean up and retry
             async with self._lock:
-                await self._cleanup_connection(conn)
-
-    async def acquire(self) -> PoolConnection:
-        try:
-            return await asyncio.wait_for(
-                self._acquire_internal(), timeout=self._timeout
-            )
-        except asyncio.TimeoutError:
-            raise RuntimeError(
-                f"Pool timeout: Failed to acquire connection within {self._timeout} seconds"
-            )
-
-    async def release(self, conn: PoolConnection):
-        if self.is_closed:
-            async with self._lock:
-                if conn.id in self._all_connections:
-                    await self._cleanup_connection(conn)
-            return
-
-        async with self._lock:
-            if conn.id not in self._all_connections:
-                return
-
-        # Try to reset connection
-        try:
-            await asyncio.wait_for(conn.reset(), timeout=min(self._timeout, 5.0))
-        except Exception as e:
-            log.warning(
-                "Connection %s failed to reset and will be discarded.",
-                conn.id,
-                exc_info=e,
-            )
-            # Connection couldn't be reset, clean it up
-            async with self._lock:
-                await self._cleanup_connection(conn)
-            return
-
-        # Connection successfully reset, return to pool
-        conn.mark_as_idle()
-        try:
-            self._queue.put_nowait(conn)
-        except asyncio.QueueFull:
-            # Pool is full (shouldn't happen), clean up connection
-            async with self._lock:
-                await self._cleanup_connection(conn)
-
-    async def close(self):
-        if self.is_closed:
-            return
-
-        self._closed_event.set()
-
-        # Clear the queue
-        while not self._queue.empty():
-            try:
-                self._queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-
-        async with self._lock:
-            connections = list(self._all_connections.values())
-            self._all_connections.clear()
-
-        # Close all connections concurrently
-        close_tasks = [conn.close() for conn in connections]
-        if close_tasks:
-            await asyncio.gather(*close_tasks, return_exceptions=True)
+                await self._decommission_connection(conn)

@@ -1,26 +1,27 @@
 import time
 
+from uuid import uuid4
 from typing import Optional, Callable, Awaitable
 
 from .protocols import Connection
 
 
 class PoolConnection:
-    _connection_counter = 0
-
-    def __init__(self, connection: Connection, connection_id: str):
+    def __init__(self, connection: Connection):
+        self._id = str(uuid4())
         self.raw_connection = connection
-        self.id = connection_id
         self.idle_since: Optional[float] = None
 
     @classmethod
     async def create(
         cls, connection_factory: Callable[[], Awaitable[Connection]]
     ) -> "PoolConnection":
-        cls._connection_counter += 1
-        connection_id = f"conn_{cls._connection_counter}"
         raw_conn = await connection_factory()
-        return cls(connection=raw_conn, connection_id=connection_id)
+        return cls(connection=raw_conn)
+
+    @property
+    def id(self) -> str:
+        return self._id
 
     def mark_as_in_use(self) -> None:
         self.idle_since = None
@@ -46,6 +47,6 @@ class PoolConnection:
         try:
             await self.raw_connection.close()
         except Exception:
-            # We don't want close() to fail, as it's often a cleanup call.
-            # The previous is_alive/reset check should have already caught the error.
-            pass
+            # This method must be fault-tolerant. A failure to close a connection,
+            # which may already be broken, should not disrupt Pool's cleanup operations.
+            return None

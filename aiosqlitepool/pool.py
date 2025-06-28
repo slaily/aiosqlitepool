@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Callable, Awaitable
+from typing import Dict, Callable, Awaitable, Optional
 
 from .connection import PoolConnection
 from .protocols import Connection
@@ -13,22 +13,24 @@ class Pool:
     def __init__(
         self,
         connection_factory: Callable[[], Awaitable[Connection]],
-        pool_size: int = 5,
-        acquisition_timeout: float = 30.0,
-        idle_timeout: float = 3600.0,
+        pool_size: Optional[int] = 20,
+        acquisition_timeout: Optional[int] = 30,
+        idle_timeout: Optional[int] = 86400,
     ):
         """
         Initializes a new connection pool.
 
         Args:
             connection_factory: An async callable that returns a new Connection object.
-            pool_size: The maximum number of connections to keep in the pool.
-            acquisition_timeout: The maximum number of seconds to wait for a
-                connection to become available before raising a timeout error.
-            idle_timeout: The maximum number of seconds that a connection can remain
-                idle in the pool before being closed and replaced. This helps
-                prevent issues with firewalls or database servers closing stale
-                connections.
+            pool_size (int, optional): The maximum number of connections to keep
+                in the pool. Defaults to 20.
+            acquisition_timeout (int, optional): The maximum number of seconds to
+                wait for a connection to become available before raising a
+                timeout error. Defaults to 30.
+            idle_timeout (int, optional): The maximum number of seconds that a
+                connection can remain idle in the pool before being closed and
+                replaced. This helps prevent issues with firewalls or database
+                servers closing stale connections. Defaults to 86400.
         """
         self._connection_factory = connection_factory
         self._pool_size = pool_size
@@ -69,9 +71,7 @@ class Pool:
 
         # Try to reset connection
         try:
-            await asyncio.wait_for(
-                conn.reset(), timeout=min(self._acquisition_timeout, 5.0)
-            )
+            await asyncio.wait_for(conn.reset(), timeout=self._acquisition_timeout)
         except Exception as e:
             log.warning(
                 "Connection %s failed to reset and will be discarded.",

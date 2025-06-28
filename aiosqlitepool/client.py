@@ -1,4 +1,4 @@
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Optional
 from contextlib import asynccontextmanager
 
 from .pool import Pool
@@ -9,9 +9,9 @@ class SQLiteConnectionPool:
     def __init__(
         self,
         connection_factory: Callable[[], Awaitable[Connection]],
-        pool_size: int = 10,
-        acquisition_timeout: float = 30.0,
-        idle_timeout: float = 600.0,
+        pool_size: Optional[int] = 20,
+        acquisition_timeout: Optional[int] = 30,
+        idle_timeout: Optional[int] = 86400,
     ):
         """
         Initializes the high-level connection pool manager.
@@ -19,20 +19,22 @@ class SQLiteConnectionPool:
         Args:
             connection_factory: An async callable that returns a new raw
                 database connection.
-            pool_size: The maximum number of connections to keep in the pool.
-            acquisition_timeout: The maximum number of seconds to wait for a
-                connection to become available before raising a timeout error.
-            idle_timeout: The maximum number of seconds that a connection can remain
-                idle in the pool before being closed and replaced. This helps
-                prevent issues with firewalls or database servers closing stale
-                connections. Set this to a value lower than your database's
-                idle timeout setting.
+            pool_size (int, optional): The maximum number of connections to keep
+                in the pool. Defaults to 20.
+            acquisition_timeout (int, optional): The maximum number of seconds to
+                wait for a connection to become available before raising a
+                timeout error. Defaults to 30.
+            idle_timeout (int, optional): The maximum number of seconds that a
+                connection can remain idle in the pool before being closed and
+                replaced. This helps prevent issues with firewalls or database
+                servers closing stale connections. Set this to a value lower
+                than your database's idle timeout setting. Defaults to 86400.
         """
         self._pool = Pool(
             connection_factory=connection_factory,
             pool_size=pool_size,
-            acquisition_timeout=acquisition_timeout,
-            idle_timeout=idle_timeout,
+            acquisition_timeout=int(acquisition_timeout),
+            idle_timeout=int(idle_timeout),
         )
 
     @asynccontextmanager

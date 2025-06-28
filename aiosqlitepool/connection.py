@@ -26,22 +26,29 @@ class PoolConnection:
     def mark_as_in_use(self) -> None:
         self.idle_since = None
 
+        return None
+
     def mark_as_idle(self) -> None:
         self.idle_since = time.time()
+
+        return None
 
     @property
     def idle_time(self) -> float:
         if self.idle_since is None:
             return 0.0
+
         return time.time() - self.idle_since
 
     async def is_alive(self) -> bool:
         await self.raw_connection.execute("SELECT 1")
+
         return True
 
-    async def reset(self) -> bool:
+    async def reset(self) -> None:
         await self.raw_connection.rollback()
-        return True
+
+        return None
 
     async def close(self) -> None:
         try:

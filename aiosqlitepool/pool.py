@@ -9,30 +9,36 @@ from .protocols import Connection
 log = logging.getLogger(__name__)
 
 
-class PoolUnhealthyError(RuntimeError):
-    """Raised when the pool's circuit breaker trips."""
-
-
 class Pool:
     def __init__(
         self,
         connection_factory: Callable[[], Awaitable[Connection]],
         pool_size: int = 5,
         acquisition_timeout: float = 30.0,
-        max_idle_time: float = 3600.0,
-        max_consecutive_failures: int = 5,
+        idle_timeout: float = 3600.0,
     ):
+        """
+        Initializes a new connection pool.
+
+        Args:
+            connection_factory: An async callable that returns a new Connection object.
+            pool_size: The maximum number of connections to keep in the pool.
+            acquisition_timeout: The maximum number of seconds to wait for a
+                connection to become available before raising a timeout error.
+            idle_timeout: The maximum number of seconds that a connection can remain
+                idle in the pool before being closed and replaced. This helps
+                prevent issues with firewalls or database servers closing stale
+                connections.
+        """
         self._connection_factory = connection_factory
         self._pool_size = pool_size
         self._acquisition_timeout = acquisition_timeout
-        self._max_idle_time = max_idle_time
-        self._max_consecutive_failures = max_consecutive_failures
+        self._idle_timeout = idle_timeout
 
         self._queue: asyncio.Queue[PoolConnection] = asyncio.Queue(maxsize=pool_size)
         self._connection_registry: Dict[str, PoolConnection] = {}
         self._lock = asyncio.Lock()
         self._closed_event = asyncio.Event()
-        self._consecutive_failures = 0
 
     @property
     def is_closed(self) -> bool:
@@ -54,9 +60,7 @@ class Pool:
 
     async def release(self, conn: PoolConnection):
         if self.is_closed:
-            async with self._lock:
-                if conn.id in self._connection_registry:
-                    await self._decommission_connection(conn)
+            await self._retire_connection(conn)
             return
 
         async with self._lock:
@@ -75,8 +79,7 @@ class Pool:
                 exc_info=e,
             )
             # Connection couldn't be reset, clean it up
-            async with self._lock:
-                await self._decommission_connection(conn)
+            await self._retire_connection(conn)
             return
 
         # Connection successfully reset, return to pool
@@ -85,8 +88,7 @@ class Pool:
             self._queue.put_nowait(conn)
         except asyncio.QueueFull:
             # Pool is full (shouldn't happen), clean up connection
-            async with self._lock:
-                await self._decommission_connection(conn)
+            await self._retire_connection(conn)
 
     async def close(self):
         if self.is_closed:
@@ -111,7 +113,7 @@ class Pool:
             await asyncio.gather(*close_tasks, return_exceptions=True)
 
     async def _claim_if_healthy(self, conn: PoolConnection) -> bool:
-        if conn.idle_time > (self._max_idle_time - 0.1):
+        if conn.idle_time > (self._idle_timeout - 0.1):
             return False
 
         await conn.is_alive()
@@ -119,11 +121,13 @@ class Pool:
 
         return True
 
-    async def _decommission_connection(self, conn: PoolConnection):
+    async def _retire_connection(self, conn: PoolConnection):
+        """Close a connection and remove it from the registry."""
         try:
             await conn.close()
         finally:
-            self._connection_registry.pop(conn.id, None)
+            async with self._lock:
+                self._connection_registry.pop(conn.id, None)
 
     async def _poll_for_healthy_connection(self) -> PoolConnection:
         if self.is_closed:
@@ -135,8 +139,7 @@ class Pool:
                 if await self._claim_if_healthy(conn):
                     return conn
                 # Invalid connection - clean up and try again
-                async with self._lock:
-                    await self._decommission_connection(conn)
+                await self._retire_connection(conn)
             except asyncio.QueueEmpty:
                 return None
 
@@ -189,40 +192,18 @@ class Pool:
             raise RuntimeError("Pool is closed.")
 
         while True:
-            try:
-                conn = await self._poll_for_healthy_connection()
-                if conn:
-                    async with self._lock:
-                        self._consecutive_failures = 0  # Reset on success
-                    return conn
+            conn = await self._poll_for_healthy_connection()
+            if conn:
+                return conn
 
-                conn = await self._try_provision_new_connection()
-                if conn:
-                    async with self._lock:
-                        self._consecutive_failures = 0  # Reset on success
-                    return conn
+            conn = await self._try_provision_new_connection()
+            if conn:
+                return conn
 
-            except Exception as e:
-                async with self._lock:
-                    self._consecutive_failures += 1
-                    log.debug("Connection acquisition failed.", exc_info=e)
-                    if self._consecutive_failures >= self._max_consecutive_failures:
-                        msg = (
-                            f"Pool has exceeded max consecutive failures "
-                            f"({self._max_consecutive_failures})."
-                        )
-                        raise PoolUnhealthyError(msg) from e
-
-                # If we are here, we are in the self-healing phase.
-                # The failed connection was already cleaned up. Continue the loop.
-                continue
             # Wait for connection or pool close
             conn = await self._wait_for_connection_or_close()
             if await self._claim_if_healthy(conn):
-                async with self._lock:
-                    self._consecutive_failures = 0  # Reset on success
                 return conn
 
             # Connection was invalid, clean up and retry
-            async with self._lock:
-                await self._decommission_connection(conn)
+            await self._retire_connection(conn)

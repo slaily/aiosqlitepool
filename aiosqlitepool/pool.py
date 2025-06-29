@@ -231,9 +231,8 @@ class Pool:
                         # We must await the task to allow it to be cancelled.
                         await task
                     except asyncio.CancelledError:
-                        # This is the expected exception when cancelling a task.
-                        # We re-raise it to ensure the timeout in `acquire` is triggered.
-                        return None
+                        # This is expected when cancelling tasks, just ignore
+                        pass
 
     async def _run_acquisition_cycle(self) -> PoolConnection:
         if self.is_closed:

@@ -1,101 +1,273 @@
 # aiosqlitepool
 
-A robust, high-performance asynchronous connection pool for SQLite.
+aiosqlitepool is a connection pool for asyncio SQLite database applications. It manages a pool of database connections to reduce the overhead of constantly opening and closing SQLite connections in concurrent applications.
 
-`aiosqlitepool` provides a straightforward and efficient way to manage `aiosqlite` connections. It's designed for performance, type safety, and ease of use in modern asynchronous Python applications, with a strong focus on production-readiness.
+**Important**: aiosqlitepool does not implement SQLite driver functionality. It's a complementary pooling layer built on top of existing asyncio SQLite libraries like [aiosqlite](https://github.com/omnilib/aiosqlite). You still need an underlying SQLite driver - aiosqlitepool just makes it faster by pooling connections.
 
-## Features
+It works as a layer on top of any asyncio SQLite driver that implements a simple protocol. Currently tested with [aiosqlite](https://github.com/omnilib/aiosqlite), but designed to work with other compatible libraries.
 
-- **Flexible Initialization**: Simple path for file-based databases, and advanced `conn_factory` support for custom connection configurations.
-- **Robust Connection Pooling**: Manages a pool of connections for high-performance applications, with lazy initialization.
-- **Safe and Simple Transactions**: Provides a high-level `pool.transaction()` context manager to ensure atomic operations.
-- **Production-Ready**: A background health monitor automatically closes and replaces stale, idle, and aged connections, ensuring long-term stability.
-- **Fully Type-Hinted**: Clean, modern, and fully type-hinted code.
+aiosqlitepool in three points:
+
+* Reuses long-lived connections instead of creating new ones for each operation
+* Eliminates repetitive connection setup overhead like applying pragmas
+* Improves performance through connection-level caching and higher operations per second
+
+## Why Use Connection Pooling?
+
+Opening and closing SQLite connections for every operation creates significant overhead. Each new connection requires:
+
+- Opening the database file
+- Applying pragma settings (WAL mode, cache size, etc.)
+- Parsing and compiling SQL statements from scratch
+- Initializing internal SQLite structures
+- Loading database pages into memory
+
+Connection pooling eliminates this overhead by keeping connections alive and reusing them. Long-lived connections also benefit from SQLite's internal caching mechanisms, resulting in better performance and higher throughput for your application.
+
+## A Simple Example
+
+```python
+import asyncio
+import aiosqlite
+from aiosqlitepool import SQLiteConnectionPool
+
+async def connection_factory():
+    return await aiosqlite.connect("example.db")
+
+async def main():
+    pool = SQLiteConnectionPool(connection_factory)
+    
+    async with pool.connection() as conn:
+        await conn.execute("CREATE TABLE IF NOT EXISTS users (name TEXT)")
+        await conn.execute("INSERT INTO users VALUES (?)", ("Alice",))
+        # You must handle transaction management yourself
+        await conn.commit()
+    
+    async with pool.connection() as conn:
+        cursor = await conn.execute("SELECT name FROM users")
+        row = await cursor.fetchone()
+        print(f"Found user: {row[0]}")
+    
+    await pool.close()
+```
+
+**Note**: The pool manages connections, not transactions. You're responsible for calling `commit()` or `rollback()` as needed. The pool ensures connections are safely reused but doesn't interfere with your transaction logic.
 
 ## Installation
-
-You can install `aiosqlitepool` directly from PyPI:
 
 ```bash
 pip install aiosqlitepool
 ```
 
-## Quickstart
+## Usage
 
-The easiest way to use the pool is by providing a database path.
+### Basic Usage
 
-```python
-import asyncio
-from aiosqlitepool import DatabaseSession
-
-DB_PATH = "my_app.db"
-
-async def main():
-    pool = DatabaseSession(database_path=DB_PATH)
-
-    # Use the transaction manager to ensure atomic operations
-    async with pool.transaction() as conn:
-        await conn.execute("CREATE TABLE IF NOT EXISTS users (name TEXT)")
-        await conn.execute("INSERT INTO users VALUES ('Alice')")
-
-    # Fetch the data
-    async with pool.connection() as conn:
-        cursor = await conn.execute("SELECT name FROM users")
-        row = await cursor.fetchone()
-        print(f"Found user: {row[0]}")
-
-    await pool.close()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-## Advanced Usage: Connection Factory
-
-For advanced use cases, such as setting a `row_factory` or using a different `aiosqlite`-compatible library, you can provide a `conn_factory`.
+You must provide a `connection_factory` - an async function that creates and returns a database connection:
 
 ```python
 import asyncio
 import aiosqlite
-from aiosqlitepool import DatabaseSession
+from aiosqlitepool import SQLiteConnectionPool
 
-DB_PATH = "my_app.db"
+async def create_connection():
+    return await aiosqlite.connect("my_app.db")
 
-# 1. Define your custom factory
-async def get_row_factory_connection():
-    conn = await aiosqlite.connect(DB_PATH)
+async def main():
+    pool = SQLiteConnectionPool(create_connection)
+    
+    # The pool manages connections automatically
+    async with pool.connection() as conn:
+        cursor = await conn.execute("SELECT * FROM users")
+        users = await cursor.fetchall()
+        # No commit needed for read operations
+    
+    # For write operations, you handle transactions
+    async with pool.connection() as conn:
+        try:
+            await conn.execute("INSERT INTO users VALUES (?)", ("Bob",))
+            await conn.execute("INSERT INTO users VALUES (?)", ("Carol",))
+            await conn.commit()  # Your responsibility to commit
+        except Exception:
+            await conn.rollback()  # Your responsibility to rollback
+            raise
+    
+    await pool.close()
+```
+
+### Row Factory Support
+
+You can configure connections with row factories or other settings in your connection factory:
+
+```python
+import aiosqlite
+from aiosqlitepool import SQLiteConnectionPool
+
+async def create_connection_with_row_factory():
+    conn = await aiosqlite.connect("my_app.db")
     conn.row_factory = aiosqlite.Row
     return conn
 
 async def main():
-    # 2. Pass the factory to the pool
-    pool = DatabaseSession(conn_factory=get_row_factory_connection)
-
-    async with pool.transaction() as conn:
-        await conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER, name TEXT)")
-        await conn.execute("INSERT INTO users VALUES (1, 'Bob')")
-
+    pool = SQLiteConnectionPool(create_connection_with_row_factory)
+    
     async with pool.connection() as conn:
-        cursor = await conn.execute("SELECT id, name FROM users WHERE id = 1")
+        cursor = await conn.execute("SELECT id, name FROM users WHERE id = ?", (1,))
         user = await cursor.fetchone()
-        # Now you can access columns by name!
-        print(f"Found user: id={user['id']}, name={user['name']}")
+        print(f"User: {user['name']}")  # Access by column name
+    
+    await pool.close()
+```
 
+### Using as Context Manager
+
+The pool can be used as an async context manager for automatic cleanup:
+
+```python
+async def main():
+    async with SQLiteConnectionPool(create_connection) as pool:
+        async with pool.connection() as conn:
+            # Do database work
+            pass
+    # Pool is automatically closed
+```
+
+### FastAPI Integration
+
+Here are two common patterns for using aiosqlitepool with FastAPI:
+
+#### Manual Dependency Injection
+
+```python
+from fastapi import FastAPI, Depends, HTTPException
+import aiosqlite
+from aiosqlitepool import SQLiteConnectionPool
+
+app = FastAPI()
+
+# Global pool instance
+pool = None
+
+async def create_connection():
+    conn = await aiosqlite.connect("app.db")
+    conn.row_factory = aiosqlite.Row
+    return conn
+
+@app.on_event("startup")
+async def startup():
+    global pool
+    pool = SQLiteConnectionPool(create_connection, pool_size=10)
+
+@app.on_event("shutdown") 
+async def shutdown():
+    if pool:
+        await pool.close()
+
+def get_pool():
+    return pool
+
+@app.get("/users/{user_id}")
+async def get_user(user_id: int, pool: SQLiteConnectionPool = Depends(get_pool)):
+    async with pool.connection() as conn:
+        cursor = await conn.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        user = await cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return dict(user)
+
+@app.post("/users")
+async def create_user(name: str, pool: SQLiteConnectionPool = Depends(get_pool)):
+    async with pool.connection() as conn:
+        try:
+            cursor = await conn.execute(
+                "INSERT INTO users (name) VALUES (?) RETURNING id", (name,)
+            )
+            result = await cursor.fetchone()
+            await conn.commit()  # Your responsibility to commit
+            return {"id": result["id"], "name": name}
+        except Exception:
+            await conn.rollback()  # Your responsibility to rollback
+            raise HTTPException(status_code=500, detail="Failed to create user")
+```
+
+#### Context Manager Pattern
+
+```python
+from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+import aiosqlite
+from aiosqlitepool import SQLiteConnectionPool
+
+async def create_connection():
+    conn = await aiosqlite.connect("app.db")
+    conn.row_factory = aiosqlite.Row
+    return conn
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    pool = SQLiteConnectionPool(create_connection, pool_size=10)
+    app.state.pool = pool
+    yield
+    # Shutdown
     await pool.close()
 
-if __name__ == "__main__":
-    asyncio.run(main())
-```
+app = FastAPI(lifespan=lifespan)
+
+@app.get("/users/{user_id}")
+async def get_user(user_id: int):
+    async with app.state.pool.connection() as conn:
+        cursor = await conn.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        user = await cursor.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return dict(user)
+
+@app.post("/users")
+async def create_user(name: str):
+    async with app.state.pool.connection() as conn:
+        try:
+            cursor = await conn.execute(
+                "INSERT INTO users (name) VALUES (?) RETURNING id", (name,)
+            )
+            result = await cursor.fetchone()
+            await conn.commit()  # Your responsibility to commit
+            return {"id": result["id"], "name": name}
+        except Exception:
+            await conn.rollback()  # Your responsibility to rollback
+            raise HTTPException(status_code=500, detail="Failed to create user")
 
 ## Configuration
 
-The `DatabaseSession` can be configured with the following parameters:
+`SQLiteConnectionPool` accepts these parameters:
 
-- `database_path` (str, optional): The path to the SQLite database file.
-- `conn_factory` (Callable, optional): An async function that returns a connection object.
-- `pool_size` (int): The maximum number of connections in the pool. Defaults to `10`.
-- `timeout` (float): Seconds to wait for a connection before raising a `RuntimeError`. Defaults to `30.0`.
-- `max_connection_age` (float): Maximum age in seconds for any connection before it's replaced. Defaults to `3600` (1 hour).
-- `max_idle_time` (float): Maximum time in seconds a connection can be idle in the pool before being closed. Defaults to `600` (10 minutes).
+* `connection_factory` (required): Async function that returns a database connection
+* `pool_size` (int): Maximum number of connections in the pool (default: 20)
+* `acquisition_timeout` (int): Seconds to wait for a connection (default: 30)
+* `idle_timeout` (int): Seconds before idle connections are replaced (default: 86400)
 
-You must provide either `database_path` or `conn_factory`.
+## Connection Protocol
+
+aiosqlitepool works with any connection object that implements:
+
+```python
+async def execute(*args, **kwargs): ...
+async def rollback(): ...
+async def close(): ...
+```
+
+This makes it compatible with aiosqlite and other async SQLite libraries.
+
+## How It Works
+
+The pool automatically:
+
+* Creates connections on-demand up to the pool size limit
+* Reuses idle connections to avoid creation overhead
+* Performs health checks to detect broken connections
+* Rolls back any uncommitted transactions when connections are returned
+* Replaces connections that have been idle too long
+
+## License
+
+aiosqlitepool is available under the MIT License.

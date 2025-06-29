@@ -71,7 +71,8 @@ class Pool:
 
     async def release(self, conn: PoolConnection):
         if self.is_closed:
-            await self._retire_connection(conn)
+            if conn:
+                await self._retire_connection(conn)
             return None
 
         to_close = None
@@ -231,6 +232,7 @@ class Pool:
                         await task
                     except asyncio.CancelledError:
                         # This is the expected exception when cancelling a task.
+                        # We re-raise it to ensure the timeout in `acquire` is triggered.
                         return None
 
     async def _run_acquisition_cycle(self) -> PoolConnection:

@@ -1,136 +1,86 @@
-import time
 import unittest
 
-from typing import Any
 from asyncio import sleep
 
+from tests.helpers import StubConnection
 from aiosqlitepool.connection import PoolConnection
 
 
-class SQLiteConnection:
-    def __init__(self, should_fail: bool = False):
-        self._connection = object()
-        self.closed = False
-        self.rolled_back = False
-        self.should_fail = should_fail
-        self.executions = 0
-
-    async def execute(self, *args: Any, **kwargs: Any) -> Any:
-        self.executions += 1
-        if self.should_fail:
-            raise Exception("Simulated connection failure")
-        await sleep(0)
-
-    async def rollback(self) -> None:
-        if self.should_fail:
-            raise Exception("Simulated connection failure")
-        self.rolled_back = True
-        await sleep(0)
-
-    async def close(self) -> None:
-        if self.should_fail:
-            raise Exception("Simulated connection failure")
-        self.closed = True
-        self._connection = None
-        await sleep(0)
-
-
 class TestPoolConnection(unittest.IsolatedAsyncioTestCase):
-    async def test_creation_and_basic_attributes(self):
-        """Test that a PoolConnection is created with correct basic attributes."""
-        mock_conn = SQLiteConnection()
-        pool_conn = PoolConnection(connection=mock_conn)
+    def setUp(self):
+        """Set up a default stub connection for tests."""
+        self.raw_conn = StubConnection(connection_id=1)
+        self.pool_conn = PoolConnection(connection=self.raw_conn)
 
-        self.assertIs(pool_conn.raw_connection, mock_conn)
-        self.assertIsInstance(pool_conn.id, str)
-        self.assertTrue(len(pool_conn.id) > 0)
-        self.assertIsNone(pool_conn.idle_since)
-        self.assertEqual(pool_conn.idle_time, 0.0)
+    def test_initial_attributes(self):
+        """Test that a PoolConnection is created with correct basic attributes."""
+        self.assertIs(self.pool_conn.raw_connection, self.raw_conn)
+        self.assertIsInstance(self.pool_conn.id, str)
+        self.assertIsNone(self.pool_conn.idle_since)
+        self.assertEqual(self.pool_conn.idle_time, 0.0)
+
+    def test_mark_as_idle_and_in_use(self):
+        """Test that idle status is marked correctly."""
+        self.pool_conn.mark_as_idle()
+        self.assertIsNotNone(self.pool_conn.idle_since)
+
+        self.pool_conn.mark_as_in_use()
+        self.assertIsNone(self.pool_conn.idle_since)
+        self.assertEqual(self.pool_conn.idle_time, 0.0)
 
     async def test_idle_time_tracking(self):
-        """Test that idle time is tracked correctly."""
-        mock_conn = SQLiteConnection()
-        pool_conn = PoolConnection(connection=mock_conn)
+        """Test that idle time is tracked correctly after being marked."""
+        self.pool_conn.mark_as_idle()
+        await sleep(0.02)
+        self.assertGreater(self.pool_conn.idle_time, 0.01)
 
-        # Initially not idle
-        self.assertEqual(pool_conn.idle_time, 0.0)
+    async def test_create_class_method(self):
+        """Test the factory classmethod for creating connections."""
 
-        # Mark as idle
-        pool_conn.mark_as_idle()
-        self.assertIsNotNone(pool_conn.idle_since)
+        async def factory():
+            return StubConnection(connection_id=2)
 
-        # Wait and check idle time
-        await sleep(0.1)
-        self.assertGreater(pool_conn.idle_time, 0.09)
-        self.assertLess(pool_conn.idle_time, 0.15)
-
-        # Mark as in use again
-        pool_conn.mark_as_in_use()
-        self.assertIsNone(pool_conn.idle_since)
-        self.assertEqual(pool_conn.idle_time, 0.0)
-
-    async def test_factory_method_creates_connection(self):
-        """Test that the factory method creates connections properly."""
-
-        async def connection_factory():
-            return SQLiteConnection()
-
-        pool_conn = await PoolConnection.create(connection_factory)
-
+        pool_conn = await PoolConnection.create(factory)
         self.assertIsInstance(pool_conn, PoolConnection)
-        self.assertIsInstance(pool_conn.raw_connection, SQLiteConnection)
-        self.assertIsInstance(pool_conn.id, str)
-        self.assertTrue(len(pool_conn.id) > 0)
+        self.assertIsInstance(pool_conn.raw_connection, StubConnection)
+        self.assertEqual(pool_conn.raw_connection.connection_id, 2)
 
-    async def test_is_alive_healthy_connection(self):
-        """Test health check on a healthy connection."""
-        mock_conn = SQLiteConnection()
-        pool_conn = PoolConnection(connection=mock_conn)
+    async def test_is_alive_calls_execute(self):
+        """Test that is_alive() calls execute on the raw connection."""
+        await self.pool_conn.is_alive()
+        self.assertEqual(self.raw_conn.execute_count, 1)
 
-        result = await pool_conn.is_alive()
+    async def test_is_alive_propagates_failure(self):
+        """Test that is_alive() propagates exceptions from execute."""
+        self.raw_conn._fail_on_execute = True
+        with self.assertRaisesRegex(RuntimeError, "Failed to execute"):
+            await self.pool_conn.is_alive()
 
-        self.assertTrue(result)
-        self.assertEqual(mock_conn.executions, 1)
+    async def test_reset_calls_rollback(self):
+        """Test that reset() calls rollback on the raw connection."""
+        await self.pool_conn.reset()
+        self.assertEqual(self.raw_conn.rollback_count, 1)
 
-    async def test_is_alive_failing_connection(self):
-        """Test health check on a failing connection."""
-        mock_conn = SQLiteConnection(should_fail=True)
-        pool_conn = PoolConnection(connection=mock_conn)
+    async def test_reset_propagates_failure(self):
+        """Test that reset() propagates exceptions from rollback."""
+        self.raw_conn._fail_on_reset = True
+        with self.assertRaisesRegex(RuntimeError, "Failed to reset connection"):
+            await self.pool_conn.reset()
 
-        with self.assertRaises(Exception):
-            await pool_conn.is_alive()
+    async def test_close_calls_close(self):
+        """Test that close() calls close on the raw connection."""
+        await self.pool_conn.close()
+        self.assertEqual(self.raw_conn.close_count, 1)
+        self.assertTrue(self.raw_conn.is_closed)
 
-    async def test_reset_successful(self):
-        """Test successful connection reset."""
-        mock_conn = SQLiteConnection()
-        pool_conn = PoolConnection(connection=mock_conn)
+    async def test_close_is_fault_tolerant(self):
+        """Test that close() does not raise an error if the raw connection fails to close."""
+        self.raw_conn._fail_on_close = True
+        try:
+            await self.pool_conn.close()
+        except Exception:
+            self.fail("PoolConnection.close() should not raise an exception.")
 
-        result = await pool_conn.reset()
 
-        self.assertTrue(result)
-        self.assertTrue(mock_conn.rolled_back)
-
-    async def test_reset_failing(self):
-        """Test connection reset failure."""
-        mock_conn = SQLiteConnection(should_fail=True)
-        pool_conn = PoolConnection(connection=mock_conn)
-
-        with self.assertRaises(Exception):
-            await pool_conn.reset()
-
-    async def test_close_successful(self):
-        """Test successful connection close."""
-        mock_conn = SQLiteConnection()
-        pool_conn = PoolConnection(connection=mock_conn)
-
-        await pool_conn.close()
-
-        self.assertTrue(mock_conn.closed)
-
-    async def test_close_failing_doesnt_raise(self):
-        """Test that connection close failure doesn't raise exceptions."""
-        mock_conn = SQLiteConnection(should_fail=True)
-        pool_conn = PoolConnection(connection=mock_conn)
-
-        # Should not raise despite mock_conn.close() failing
-        await pool_conn.close()
+if __name__ == "__main__":
+    unittest.main()

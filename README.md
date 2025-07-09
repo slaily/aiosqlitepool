@@ -1,10 +1,11 @@
 # aiosqlitepool
 
-aiosqlitepool is a connection pool for asyncio SQLite database applications. Instead of creating a new database connection for every operation, it maintains a pool of reusable connections that dramatically improve your application's performance and responsiveness.
+`aiosqlitepool` is a high-performance connection pool for asyncio SQLite applications. By managing a pool of reusable database connections, it eliminates connection overhead and delivers significant performance gains.
 
-**Important**: aiosqlitepool does not implement SQLite driver functionality. It's a complementary pooling layer built on top of existing asyncio SQLite libraries like [aiosqlite](https://github.com/omnilib/aiosqlite). You still need an underlying SQLite driver - aiosqlitepool just makes it faster by pooling connections.
+**Important**: `aiosqlitepool` is not a SQLite database driver.
 
-It works as a layer on top of any asyncio SQLite driver that implements a simple protocol. Currently tested with [aiosqlite](https://github.com/omnilib/aiosqlite), but designed to work with other compatible libraries.
+It's a performance-boosting layer that works *with* an asyncio driver like [aiosqlite](https://github.com/omnilib/aiosqlite), not as a replacement for it.
+
 
 ## Table of Contents
 
@@ -19,15 +20,15 @@ It works as a layer on top of any asyncio SQLite driver that implements a simple
 - [Configuration](#configuration)
 - [Performance Benchmarks](#performance-benchmarks)
 - [Common Issues & Solutions](#common-issues--solutions)
-- [Connection Protocol](#connection-protocol)
+- [Compatibility](#compatibility)
 - [How It Works](#how-it-works)
 - [License](#license)
 
 aiosqlitepool in three points:
 
-* **Eliminates connection overhead**: Reuses long-lived connections instead of creating new ones for each operation
-* **Simplifies configuration**: Connections stay configured with your pragma settings and ready to use
-* **Improves concurrent performance**: Handles more requests with the same hardware through efficient connection reuse
+* **Eliminates connection overhead**: Reuses long-lived connections to avoid the costly setup and teardown for each operation.
+* **Maximizes caching gain**: Keeps SQLite's in-memory page cache 'hot' between requests. By preserving the cache, queries can avoid slow disk reads and run dramatically faster.
+* **Unlocks concurrent throughput**: Allows your application to process significantly more requests per second and stay responsive under heavy load.
 
 ## When You Need This
 
@@ -38,34 +39,30 @@ You should use aiosqlitepool if your application:
 - Uses pragma settings like WAL mode or custom cache sizes
 - Needs predictable database response times under load
 
-**Skip it if**: You're building a CLI tool that makes 1-2 database calls and exits.
+**Skip it if**: 
 
-## Why Connection Pooling?
+- You're building a CLI tool that makes 1-2 database calls and exits.
 
-**The Problem**: Opening a new SQLite connection for every database operation is expensive:
+## Installation
 
-```python
-# Without pooling - MEASURED: ~29ms average
-async def get_user(user_id):
-    conn = await aiosqlite.connect("app.db")  # Connection overhead
-    await conn.execute("PRAGMA journal_mode=WAL")  # Setup overhead  
-    cursor = await conn.execute("SELECT * FROM users WHERE id=?", (user_id,))
-    user = await cursor.fetchone()
-    await conn.close()  # Cleanup overhead
-    return user  # Measured: 28.98ms average in concurrent load
+`aiosqlitepool` requires the `aiosqlite` driver to be installed as a peer dependency.
+
+Install with your preferred package manager:
+
+**pip**
+```bash
+pip install aiosqlite aiosqlitepool
 ```
 
-**The Solution**: Reuse connections from a pool:
-
-```python
-# With pooling - MEASURED: ~17ms average  
-async def get_user(user_id):
-    async with pool.connection() as conn:  # Fast: connection already ready
-        cursor = await conn.execute("SELECT * FROM users WHERE id=?", (user_id,))
-        return await cursor.fetchone()  # Measured: 17.13ms average in concurrent load
+**uv**
+```bash
+uv add aiosqlite aiosqlitepool
 ```
 
-**Real Impact**: In our benchmark with 100 concurrent workers on a database with millions of records, connection pooling delivered 5,731 requests/second vs 3,325 without pooling - a **72% improvement in throughput** for the same hardware.
+**Poetry**
+```bash
+poetry add aiosqlite aiosqlitepool
+```
 
 ## Quick Start
 
@@ -99,12 +96,6 @@ if __name__ == "__main__":
 
 **Note**: The pool manages connections, not transactions. You're responsible for calling `commit()` or `rollback()` as needed. The pool ensures connections are safely reused but doesn't interfere with your transaction logic.
 
-## Installation
-
-```bash
-pip install aiosqlitepool
-```
-
 ## Usage
 
 ### Basic Usage
@@ -137,30 +128,6 @@ async def main():
         except Exception:
             await conn.rollback()  # Your responsibility to rollback
             raise
-    
-    await pool.close()
-```
-
-### Row Factory Support
-
-You can configure connections with row factories or other settings in your connection factory:
-
-```python
-import aiosqlite
-from aiosqlitepool import SQLiteConnectionPool
-
-async def create_connection_with_row_factory():
-    conn = await aiosqlite.connect("my_app.db")
-    conn.row_factory = aiosqlite.Row
-    return conn
-
-async def main():
-    pool = SQLiteConnectionPool(create_connection_with_row_factory)
-    
-    async with pool.connection() as conn:
-        cursor = await conn.execute("SELECT id, name FROM users WHERE id = ?", (1,))
-        user = await cursor.fetchone()
-        print(f"User: {user['name']}")  # Access by column name
     
     await pool.close()
 ```
@@ -282,6 +249,17 @@ async def create_user(name: str):
         except Exception:
             await conn.rollback()  # Your responsibility to rollback
             raise HTTPException(status_code=500, detail="Failed to create user")
+```
+
+## How It Works
+
+The pool automatically:
+
+* Creates connections on-demand up to the pool size limit
+* Reuses idle connections to avoid creation overhead
+* Performs health checks to detect broken connections
+* Rolls back any uncommitted transactions when connections are returned
+* Replaces connections that have been idle too long
 
 ## Configuration
 
@@ -292,7 +270,7 @@ async def create_user(name: str):
 * `acquisition_timeout` (int): Seconds to wait for a connection (default: 30)
 * `idle_timeout` (int): Seconds before idle connections are replaced (default: 86400)
 
-### Recommended Settings by Use Case
+### Recommended Settings
 
 **Web API (FastAPI/Django):**
 ```python
@@ -373,49 +351,39 @@ Get pooled connection → Execute query → Return to pool = ~17ms average
 - 1,000 queries/second = 623ms of pure connection overhead per second  
 - In high-throughput applications, pooling becomes essential for maintaining responsiveness
 
-## Connection Protocol
+## Compatibility
 
-aiosqlitepool works with any connection object that implements:
+`aiosqlitepool` is designed to be a flexible pooling layer that works with different asyncio SQLite drivers.
+
+
+To be compatible, a connection object from a driver must have implemented the following three `async` methods:
 
 ```python
-async def execute(*args, **kwargs): ...
-async def rollback(): ...
-async def close(): ...
+class Connection:
+    async def execute(self, *args, **kwargs):
+        ...
+
+    async def rollback(self) -> None:
+        ...
+
+    async def close(self) -> None:
+        ...
 ```
 
-This makes it compatible with aiosqlite and other async SQLite libraries.
+**Note on `commit`**: The `commit` method is intentionally not part of the protocol. Transaction management is considered the responsibility of the application developer, not the pool. `aiosqlitepool` never commits on your behalf.
 
-## Common Issues & Solutions
+### Officially supported drivers
 
-**"Pool connection timeout" errors:**
-- Increase `pool_size` if you have high concurrency
-- Check for forgotten `await` keywords in your code
-- Make sure you're not holding connections too long
+The following libraries are tested and confirmed to work out-of-the-box with `aiosqlitepool`:
 
-**Database locked errors:**
-- Ensure you're calling `commit()` or `rollback()` in all code paths
-- Check that connections are properly returned to the pool (use `async with`)
-- Consider increasing `acquisition_timeout` for heavy workloads
+*   **[aiosqlite](https://github.com/omnilib/aiosqlite)**
 
-**Memory usage growing over time:**
-- Reduce `idle_timeout` to close idle connections sooner
-- Reduce `pool_size` if you have fewer concurrent operations than expected
-- Ensure `await pool.close()` is called during shutdown
+### Using other drivers
 
-**Slower than expected performance:**
-- Make sure you're reusing the same pool instance across requests
-- Verify your `connection_factory` isn't doing expensive setup repeatedly
-- Check that you're not creating new pools for each operation
+If you are using another asyncio SQLite library that follows the protocol, it should work seamlessly. Just pass your driver's connection function to the `connection_factory`.
 
-## How It Works
+If you encounter an issue with a specific driver, please let us know by [opening a GitHub issue](https://github.com/your-username/aiosqlitepool/issues).
 
-The pool automatically:
-
-* Creates connections on-demand up to the pool size limit
-* Reuses idle connections to avoid creation overhead
-* Performs health checks to detect broken connections
-* Rolls back any uncommitted transactions when connections are returned
-* Replaces connections that have been idle too long
 
 ## License
 

@@ -1,6 +1,6 @@
 [project]
 name = "aiosqlitepool"
-version = "0.1.0"
+version = "1.0.0.beta"
 description = "A robust, high-performance asynchronous connection pool for SQLite."
 readme = "README.md"
 requires-python = ">=3.8"

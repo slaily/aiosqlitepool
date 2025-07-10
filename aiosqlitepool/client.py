@@ -12,6 +12,7 @@ class SQLiteConnectionPool:
         pool_size: Optional[int] = 20,
         acquisition_timeout: Optional[int] = 30,
         idle_timeout: Optional[int] = 86400,
+        operation_timeout: Optional[int] = 10,
     ):
         """
         Initializes the high-level connection pool manager.
@@ -35,6 +36,7 @@ class SQLiteConnectionPool:
             pool_size=pool_size,
             acquisition_timeout=int(acquisition_timeout),
             idle_timeout=int(idle_timeout),
+            operation_timeout=int(operation_timeout),
         )
 
     @asynccontextmanager

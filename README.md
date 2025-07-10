@@ -50,41 +50,9 @@ uv add aiosqlite aiosqlitepool
 poetry add aiosqlite aiosqlitepool
 ```
 
-## Quick Start
-
-```python
-import asyncio
-import aiosqlite
-from aiosqlitepool import SQLiteConnectionPool
-
-async def connection_factory():
-    return await aiosqlite.connect("example.db")
-
-async def main():
-    pool = SQLiteConnectionPool(connection_factory)
-    
-    async with pool.connection() as conn:
-        await conn.execute("CREATE TABLE IF NOT EXISTS users (name TEXT)")
-        await conn.execute("INSERT INTO users VALUES (?)", ("Alice",))
-        # You must handle transaction management yourself
-        await conn.commit()
-    
-    async with pool.connection() as conn:
-        cursor = await conn.execute("SELECT name FROM users")
-        row = await cursor.fetchone()
-        print(f"Found user: {row[0]}")
-    
-    await pool.close()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-**Note**: The pool manages connections, not transactions. You're responsible for calling `commit()` or `rollback()` as needed. The pool ensures connections are safely reused but doesn't interfere with your transaction logic.
-
 ## Usage
 
-### Basic Usage
+### Basic usage
 
 You must provide a `connection_factory` - an async function that creates and returns a database connection:
 
@@ -95,31 +63,30 @@ import aiosqlite
 from aiosqlitepool import SQLiteConnectionPool
 
 
-async def create_connection():
-    return await aiosqlite.connect("my_app.db")
+async def connection_factory():
+    return await aiosqlite.connect("basic.db")
 
 
 async def main():
-    pool = SQLiteConnectionPool(create_connection)
+    pool = SQLiteConnectionPool(connection_factory)
     
-    # The pool manages connections automatically
     async with pool.connection() as conn:
-        cursor = await conn.execute("SELECT * FROM users")
-        users = await cursor.fetchall()
-        # No commit needed for read operations
-    
-    # For write operations, you handle transactions
-    async with pool.connection() as conn:
-        try:
-            await conn.execute("INSERT INTO users VALUES (?)", ("Bob",))
-            await conn.execute("INSERT INTO users VALUES (?)", ("Carol",))
-            await conn.commit()  # Your responsibility to commit
-        except Exception:
-            await conn.rollback()  # Your responsibility to rollback
-            raise
+        await conn.execute("CREATE TABLE IF NOT EXISTS users (name TEXT)")
+        await conn.execute("INSERT INTO users VALUES (?)", ("Alice",))
+        # You must handle transaction management yourself
+        await conn.commit()
+        cursor = await conn.execute("SELECT name FROM users")
+        row = await cursor.fetchone()
+        print(f"Found user: {row[0]}")
     
     await pool.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
+
+**Note**: The pool manages connections, not transactions. You're responsible for calling `commit()` or `rollback()` as needed. The pool ensures connections are safely reused but doesn't interfere with your transaction logic.
 
 ### Using as Context Manager
 
@@ -134,110 +101,71 @@ async def main():
     # Pool is automatically closed
 ```
 
-### FastAPI Integration
+### FastAPI integration
 
-Here are two common patterns for using aiosqlitepool with FastAPI:
+A effective patterns for integrating `aiosqlitepool` with [FastAPI](https://fastapi.tiangolo.com/).
 
-#### Manual Dependency Injection
+It correctly manages the pool's lifecycle using the `lifespan` context manager.
 
-```python
-from fastapi import FastAPI, Depends, HTTPException
-import aiosqlite
-from aiosqlitepool import SQLiteConnectionPool
-
-app = FastAPI()
-
-# Global pool instance
-pool = None
-
-async def create_connection():
-    conn = await aiosqlite.connect("app.db")
-    conn.row_factory = aiosqlite.Row
-    return conn
-
-@app.on_event("startup")
-async def startup():
-    global pool
-    pool = SQLiteConnectionPool(create_connection, pool_size=10)
-
-@app.on_event("shutdown") 
-async def shutdown():
-    if pool:
-        await pool.close()
-
-def get_pool():
-    return pool
-
-@app.get("/users/{user_id}")
-async def get_user(user_id: int, pool: SQLiteConnectionPool = Depends(get_pool)):
-    async with pool.connection() as conn:
-        cursor = await conn.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-        user = await cursor.fetchone()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        return dict(user)
-
-@app.post("/users")
-async def create_user(name: str, pool: SQLiteConnectionPool = Depends(get_pool)):
-    async with pool.connection() as conn:
-        try:
-            cursor = await conn.execute(
-                "INSERT INTO users (name) VALUES (?) RETURNING id", (name,)
-            )
-            result = await cursor.fetchone()
-            await conn.commit()  # Your responsibility to commit
-            return {"id": result["id"], "name": name}
-        except Exception:
-            await conn.rollback()  # Your responsibility to rollback
-            raise HTTPException(status_code=500, detail="Failed to create user")
-```
-
-#### Context Manager Pattern
+The pool is stored on the application's state, and a single dependency accesses it via the `request` object.
 
 ```python
-from fastapi import FastAPI, HTTPException
+import asyncio
+
 from contextlib import asynccontextmanager
-import aiosqlite
-from aiosqlitepool import SQLiteConnectionPool
+from typing import AsyncGenerator
 
-async def create_connection():
+import aiosqlite
+from fastapi import Depends, FastAPI, HTTPException, Request
+from aiosqlitepool import SQLiteConnectionPool, Connection
+
+
+async def create_connection() -> aiosqlite.Connection:
+    """A factory for creating new connections."""
     conn = await aiosqlite.connect("app.db")
     conn.row_factory = aiosqlite.Row
     return conn
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    pool = SQLiteConnectionPool(create_connection, pool_size=10)
+    """
+    Manage the connection pool's lifecycle.
+    The pool is created when the application starts and gracefully closed when it stops.
+    """
+    pool = SQLiteConnectionPool(connection_factory=create_connection, pool_size=10)
     app.state.pool = pool
     yield
-    # Shutdown
     await pool.close()
+
 
 app = FastAPI(lifespan=lifespan)
 
-@app.get("/users/{user_id}")
-async def get_user(user_id: int):
-    async with app.state.pool.connection() as conn:
-        cursor = await conn.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-        user = await cursor.fetchone()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        return dict(user)
 
-@app.post("/users")
-async def create_user(name: str):
-    async with app.state.pool.connection() as conn:
-        try:
-            cursor = await conn.execute(
-                "INSERT INTO users (name) VALUES (?) RETURNING id", (name,)
-            )
-            result = await cursor.fetchone()
-            await conn.commit()  # Your responsibility to commit
-            return {"id": result["id"], "name": name}
-        except Exception:
-            await conn.rollback()  # Your responsibility to rollback
-            raise HTTPException(status_code=500, detail="Failed to create user")
+async def get_connection(request: Request) -> AsyncGenerator[Connection, None]:
+    """
+    A dependency that provides a connection from the pool.
+    It accesses the pool from the application state.
+    """
+    pool: SQLiteConnectionPool | None = getattr(request.app.state, "pool", None)
+    if not pool:
+        raise HTTPException(
+            status_code=503, detail="Connection pool is not available"
+        )
+
+    async with pool.connection() as conn:
+        yield conn
+
+
+@app.get("/users/{user_id}")
+async def get_user(
+    user_id: int, conn: Connection = Depends(get_connection)
+) -> dict[str, any]:
+    cursor = await conn.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    user = await cursor.fetchone()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return dict(user)
 ```
 
 ## How It Works
@@ -268,7 +196,6 @@ Here's a quick checklist. Use `aiosqlitepool` if:
 - **Your workers process high-throughput jobs**: Your background workers run more than **~30 queries per second**.
 - **Your application requires predictable low latency**: Your service operates under a tight performance budget (e.g., p99 latency < 50ms).
 - **You aim for a minimal footprint**: You design your applications to be resource-efficient, knowing that reducing CPU and I/O load contributes to leaner, more sustainable infrastructure.
-
 
 You don't need `aiosqlitepool` if your application is:
 - A **short-lived script** that runs a few queries and exits.

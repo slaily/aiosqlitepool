@@ -1,8 +1,8 @@
 # aiosqlitepool
 
 <p>
-<a href="https://github.com/aiosqlitepool/aiosqlitepool/actions?query=workflow%3ATest+event%3Apush+branch%3Amaster" target="_blank">
-    <img src="https://github.com/aiosqlitepool/aiosqlitepool/actions/workflows/test.yml/badge.svg?event=push&branch=master" alt="Test">
+<a>
+    <img src="https://img.shields.io/badge/stability-stable-green.svg" alt="Stable version">
 </a>
 <a href="https://pypi.org/project/aiosqlitepool" target="_blank">
     <img src="https://img.shields.io/pypi/v/aiosqlitepool?color=%2334D058&label=pypi%20package" alt="Package version">
@@ -21,19 +21,6 @@ It's a performance-boosting layer that works *with* an asyncio driver like [aios
 
 ## Table of Contents
 
-- [Why Connection Pooling?](#why-connection-pooling)
-- [Quick Start](#quick-start)
-- [Installation](#installation)
-- [Usage](#usage)
-  - [Basic Usage](#basic-usage)
-  - [Row Factory Support](#row-factory-support)
-  - [Using as Context Manager](#using-as-context-manager)
-  - [FastAPI Integration](#fastapi-integration)
-- [Configuration](#configuration)
-- [Performance Benchmarks](#performance-benchmarks)
-- [Common Issues & Solutions](#common-issues--solutions)
-- [Compatibility](#compatibility)
-- [How It Works](#how-it-works)
 - [License](#license)
 
 aiosqlitepool in three points:
@@ -42,26 +29,6 @@ aiosqlitepool in three points:
 * **Faster queries via "hot" cache**: Long-lived connections keep SQLite's in-memory page cache "hot." This serves frequently requested data directly from memory, speeding up repetitive queries and reducing I/O operations.
 * **Maximizes concurrent throughput**: Allows your application to process significantly more database queries per second under heavy load.
  
-## Do You Need a Connection Pool?
-
-A connection pool is a standard pattern in database-intensive applications. It solves two fundamental problems: performance and stability.
-
-**The simple answer: Yes, if you are building a persistent service with concurrent traffic.**
-
-If your application runs continuously (like a web API or background worker) and handles multiple requests at once, a connection pool is essential for performance and stability. You can skip it for short-lived scripts or very low-traffic services.
-
-Here's a quick checklist. Use `aiosqlitepool` if your application:
-
--   **Handles Steady Web Traffic:** This is the main reason. For any web service that handles a stable load of more than **5-10 requests per second**, a pool is critical. It prevents database locking errors (`SQLITE_BUSY`) and eliminates connection overhead, keeping response times low and predictable.
-
--   **Processes High-Throughput Jobs:** If a background worker runs more than **~30 queries per second**, the small overhead of opening and closing connections for each job adds up. A pool eliminates this overhead, maximizing your throughput.
-
--   **Requires Predictable Low Latency:** For services with tight performance budgets (e.g., p99 latency < 50ms), the **0.5-1ms latency hit** from creating a connection is an unacceptable variable. A pool provides consistent, fast performance by reusing ready-to-go connections.
-
-### When a Pool is Overkill
-
-You don't need the complexity of a connection pool if your application is a **short-lived script or a very low-traffic service** (e.g., fewer than a few requests per minute). If traffic is sparse or the program exits after a few calls, a direct `aiosqlite.connect()` is simpler and more efficient.
-
 ## Installation
 
 `aiosqlitepool` requires the `aiosqlite` driver to be installed as a peer dependency.
@@ -124,10 +91,13 @@ You must provide a `connection_factory` - an async function that creates and ret
 ```python
 import asyncio
 import aiosqlite
+
 from aiosqlitepool import SQLiteConnectionPool
+
 
 async def create_connection():
     return await aiosqlite.connect("my_app.db")
+
 
 async def main():
     pool = SQLiteConnectionPool(create_connection)
@@ -280,6 +250,30 @@ The pool automatically:
 * Rolls back any uncommitted transactions when connections are returned
 * Replaces connections that have been idle too long
 
+## Do you need a connection pool with SQLite?
+
+For server-based databases like PostgreSQL or MySQL, the answer is always yes. Connecting over a network is slow and expensive. A connection pool is a critical pattern to minimize latency and manage server resources.
+
+But SQLite is different. It's an embedded, in-process database. There's no network, no sockets, just a file on disk. The overhead of creating a connection is measured in microseconds, not even milliseconds. 
+
+So, is a connection pool just needless complexity?
+
+The primary challenge with SQLite in a concurrent environment (like an `asyncio` web application) is not connection time, but **write contention**. SQLite uses a database-level lock for writes. When multiple asynchronous tasks try to write to the database simultaneously through their own separate connections, they will collide. This contention leads to a cascade of `SQLITE_BUSY` or `SQLITE_LOCKED` errors.
+
+Most applications will not encounter these issues, only a small percentage under heavy load!
+
+Here's a quick checklist. Use `aiosqlitepool` if:
+
+- **Your service handles steady web traffic**: Your application serves more than **5-10 requests per second** from the database.
+- **Your workers process high-throughput jobs**: Your background workers run more than **~30 queries per second**.
+- **Your application requires predictable low latency**: Your service operates under a tight performance budget (e.g., p99 latency < 50ms).
+- **You aim for a minimal footprint**: You design your applications to be resource-efficient, knowing that reducing CPU and I/O load contributes to leaner, more sustainable infrastructure.
+
+
+You don't need `aiosqlitepool` if your application is:
+- A **short-lived script** that runs a few queries and exits.
+- A **very low-traffic service** with fewer than a few requests per minute.
+
 ## Configuration
 
 `SQLiteConnectionPool` accepts these parameters:
@@ -321,17 +315,22 @@ pool = SQLiteConnectionPool(
 )
 ```
 
-## Performance Benchmarks
+## Benchmarks
 
-All benchmarks performed on a realistic database with 1.2M users, 120K posts, 6M comments, and 12M likes.
+All benchmarks performed on a realistic database with:
 
-### Real-World Load Test
+- 1.2M users 
+- 120K posts 
+- 6M comments
+- 12M likes
+
+### Load test
 
 *1,000 concurrent requests across 100 workers*
 
 | Metric | Without Pool | With Pool | Improvement |
 |--------|-------------|-----------|-------------|
-| **Requests/sec** | 3,325 | 5,731 | **+72%** |
+| **Queries/sec** | 3,325 | 5,731 | **+72%** |
 | **Average latency** | 28.98ms | 17.13ms | **-41%** |
 | **Median latency** | 28.10ms | 13.57ms | **-52%** |
 | **P90 latency** | 37.39ms | 18.25ms | **-51%** |
@@ -341,9 +340,9 @@ All benchmarks performed on a realistic database with 1.2M users, 120K posts, 6M
 
 **Key takeaway**: In realistic concurrent scenarios, connection pooling delivers 1.7x throughput improvement and 2x faster response times for 99% of requests.
 
-### Connection Overhead Analysis
+### Connection overhead
 
-*Micro-benchmark: 10,000 simple SELECT operations across 5 workers*
+*10,000 simple SELECT operations across 5 workers*
 
 | Approach | Avg Latency | Median Latency | Total Time | Operations/sec |
 |----------|-------------|----------------|------------|----------------|
@@ -351,24 +350,7 @@ All benchmarks performed on a realistic database with 1.2M users, 120K posts, 6M
 | **Persistent connections** | 396μs | 389μs | 0.79s | 12,658 |
 | **Improvement** | **-61%** | **-61%** | **-61%** | **+158%** |
 
-**Pure connection overhead**: Each connection create/destroy cycle costs **623μs** (1,019 - 396 = 623μs) of pure overhead per database operation.
-
-### Performance Impact Summary
-
-Without pooling, each database operation requires:
-```
-Connect → Apply pragmas → Execute query → Close = ~29ms average
-```
-
-With pooling:
-```
-Get pooled connection → Execute query → Return to pool = ~17ms average  
-```
-
-**Scaling impact**: This 623μs per operation overhead compounds with usage:
-- 100 queries/second = 62ms of pure connection overhead per second
-- 1,000 queries/second = 623ms of pure connection overhead per second  
-- In high-throughput applications, pooling becomes essential for maintaining responsiveness
+**Pure connection overhead**: Each connection create/destroy cycle costs **623 microseconds** (1,019 - 396 = 623μs) of pure overhead per database operation.
 
 ## Compatibility
 
@@ -401,8 +383,7 @@ The following libraries are tested and confirmed to work out-of-the-box with `ai
 
 If you are using another asyncio SQLite library that follows the protocol, it should work seamlessly. Just pass your driver's connection function to the `connection_factory`.
 
-If you encounter an issue with a specific driver, please let us know by [opening a GitHub issue](https://github.com/your-username/aiosqlitepool/issues).
-
+If you encounter an issue with a specific driver, please let us know by [opening a GitHub issue](https://github.com/slaily/aiosqlitepool/issues).
 
 ## License
 

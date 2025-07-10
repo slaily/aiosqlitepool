@@ -38,22 +38,29 @@ It's a performance-boosting layer that works *with* an asyncio driver like [aios
 
 aiosqlitepool in three points:
 
-* **Eliminates connection overhead**: Reuses long-lived connections to avoid the costly setup and teardown for each operation.
-* **Maximizes caching gain**: Keeps SQLite's in-memory page cache 'hot' between requests. By preserving the cache, queries can avoid slow disk reads and run dramatically faster.
-* **Unlocks concurrent throughput**: Allows your application to process significantly more requests per second and stay responsive under heavy load.
+* **Eliminates connection overhead**: It avoids repeated database connection setup (syscalls, memory allocation) and teardown (syscalls, deallocation) by reusing long-lived connections.
+* **Faster queries via "hot" cache**: Long-lived connections keep SQLite's in-memory page cache "hot." This serves frequently requested data directly from memory, speeding up repetitive queries and reducing I/O operations.
+* **Maximizes concurrent throughput**: Allows your application to process significantly more database queries per second under heavy load.
+ 
+## Do You Need a Connection Pool?
 
-## When You Need This
+A connection pool is a standard pattern in database-intensive applications. It solves two fundamental problems: performance and stability.
 
-You should use aiosqlitepool if your application:
+**The simple answer: Yes, if you are building a persistent service with concurrent traffic.**
 
-- Makes frequent database queries (more than a few per minute)
-- Handles concurrent requests (web APIs, background workers)
-- Uses pragma settings like WAL mode or custom cache sizes
-- Needs predictable database response times under load
+If your application runs continuously (like a web API or background worker) and handles multiple requests at once, a connection pool is essential for performance and stability. You can skip it for short-lived scripts or very low-traffic services.
 
-**Skip it if**: 
+Here's a quick checklist. Use `aiosqlitepool` if your application:
 
-- You're building a CLI tool that makes 1-2 database calls and exits.
+-   **Handles Steady Web Traffic:** This is the main reason. For any web service that handles a stable load of more than **5-10 requests per second**, a pool is critical. It prevents database locking errors (`SQLITE_BUSY`) and eliminates connection overhead, keeping response times low and predictable.
+
+-   **Processes High-Throughput Jobs:** If a background worker runs more than **~30 queries per second**, the small overhead of opening and closing connections for each job adds up. A pool eliminates this overhead, maximizing your throughput.
+
+-   **Requires Predictable Low Latency:** For services with tight performance budgets (e.g., p99 latency < 50ms), the **0.5-1ms latency hit** from creating a connection is an unacceptable variable. A pool provides consistent, fast performance by reusing ready-to-go connections.
+
+### When a Pool is Overkill
+
+You don't need the complexity of a connection pool if your application is a **short-lived script or a very low-traffic service** (e.g., fewer than a few requests per minute). If traffic is sparse or the program exits after a few calls, a direct `aiosqlite.connect()` is simpler and more efficient.
 
 ## Installation
 

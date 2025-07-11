@@ -18,16 +18,30 @@
 
 It's a performance-boosting layer that works *with* an asyncio driver like [aiosqlite](https://github.com/omnilib/aiosqlite), not as a replacement for it.
 
-
-## Table of contents
-
-- [License](#license)
-
 aiosqlitepool in three points:
 
 * **Eliminates connection overhead**: It avoids repeated database connection setup (syscalls, memory allocation) and teardown (syscalls, deallocation) by reusing long-lived connections.
 * **Faster queries via "hot" cache**: Long-lived connections keep SQLite's in-memory page cache "hot." This serves frequently requested data directly from memory, speeding up repetitive queries and reducing I/O operations.
 * **Maximizes concurrent throughput**: Allows your application to process significantly more database queries per second under heavy load.
+
+## Table of contents
+
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Basic usage](#basic-usage)
+  - [Using as Context Manager](#using-as-context-manager)
+  - [High-performance SQLite connection configuration](#high-performance-sqlite-connection-configuration)
+  - [FastAPI integration](#fastapi-integration)
+- [Configuration](#configuration)
+- [How it works](#how-it-works)
+- [Do you need a connection pool with SQLite?](#do-you-need-a-connection-pool-with-sqlite)
+- [Benchmarks](#benchmarks)
+  - [Load test](#load-test)
+  - [Connection overhead](#connection-overhead)
+- [Compatibility](#compatibility)
+  - [Officially supported drivers](#officially-supported-drivers)
+  - [Using other drivers](#using-other-drivers)
+- [License](#license)
  
 ## Installation
 
@@ -274,7 +288,7 @@ pool = SQLiteConnectionPool(
 )
 ```
 
-## How It Works
+## How it works
 
 The pool automatically:
 

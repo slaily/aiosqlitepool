@@ -19,7 +19,7 @@ class Pool:
     def __init__(
         self,
         connection_factory: Callable[[], Awaitable[Connection]],
-        pool_size: Optional[int] = 20,
+        pool_size: Optional[int] = 5,
         acquisition_timeout: Optional[int] = 30,
         idle_timeout: Optional[int] = 86400,
         operation_timeout: Optional[int] = 10,
@@ -30,7 +30,7 @@ class Pool:
         Args:
             connection_factory: An async callable that returns a new Connection object.
             pool_size (int, optional): The maximum number of connections to keep
-                in the pool. Defaults to 20.
+                in the pool. Defaults to 5.
             acquisition_timeout (int, optional): The maximum number of seconds to
                 wait for a connection to become available before raising a
                 timeout error. Defaults to 30.

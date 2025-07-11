@@ -19,7 +19,7 @@
 It's a performance-boosting layer that works *with* an asyncio driver like [aiosqlite](https://github.com/omnilib/aiosqlite), not as a replacement for it.
 
 
-## Table of Contents
+## Table of contents
 
 - [License](#license)
 
@@ -161,9 +161,9 @@ This section demonstrates an effective pattern for integrating `aiosqlitepool` w
 
 The pattern addresses three key requirements:
 
-1. **Lifecycle Management**: The pool is created during application startup and gracefully closed on shutdown using FastAPI's `lifespan` context manager
-2. **Global Access**: The pool is stored in the application's state, making it accessible to all route handlers
-3. **Dependency Injection**: A reusable dependency function provides clean access to pooled connections with automatic resource management
+1. **Lifecycle management**: The pool is created during application startup and gracefully closed on shutdown using FastAPI's `lifespan` context manager
+2. **Global access**: The pool is stored in the application's state, making it accessible to all route handlers
+3. **Dependency injection**: A reusable dependency function provides clean access to pooled connections with automatic resource management
 
 ```python
 import asyncio
@@ -198,7 +198,7 @@ async def lifespan(app: FastAPI):
     db_pool = SQLiteConnectionPool(connection_factory=sqlite_connection, pool_size=10)
     app.state.db_pool = db_pool
     yield
-    await pool.close()
+    await db_pool.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -228,44 +228,49 @@ async def get_user(
     return dict(user)
 ```
 
-### Configurations
+### Configuration
 
 `SQLiteConnectionPool` accepts these parameters:
 
-* `connection_factory` (required): Async function that returns a database connection
-* `pool_size` (int): Maximum number of connections in the pool (default: 20)
-* `acquisition_timeout` (int): Seconds to wait for a connection (default: 30)
-* `idle_timeout` (int): Seconds before idle connections are replaced (default: 86400)
+**Required parameters**
+* **`connection_factory`** - An async function that creates and returns a new database connection. This function will be called whenever the pool needs to create a new connection.
 
-Recommended Settings
+**Optional parameters**
+* **`pool_size`** (int) - Maximum number of connections to maintain in the pool (default: `5`)
 
-**Web API (FastAPI/Django):**
+* **`acquisition_timeout`** (int) - Maximum seconds to wait for an available connection (default: `30`)
+
+* **`idle_timeout`** (int) - Maximum seconds a connection can remain idle before replacement (default: `86400` - 24 hours)
+
+**Recommended configurations**
+
+Most web applications work well with these settings:
+
 ```python
 pool = SQLiteConnectionPool(
     connection_factory,
-    pool_size=10,  # Usually enough for most web apps
-    acquisition_timeout=30,  # HTTP timeout compatible
-    idle_timeout=3600  # 1 hour - good for web traffic patterns
+    pool_size=10,
+    acquisition_timeout=30
 )
 ```
 
-**Background Workers/Heavy Load:**
+For read-heavy workloads like analytics or reporting:
+
 ```python
 pool = SQLiteConnectionPool(
     connection_factory,
-    pool_size=50,  # More connections for concurrent processing
-    acquisition_timeout=60,  # Longer timeout for batch jobs
-    idle_timeout=7200  # 2 hours - longer running processes
+    pool_size=20,
+    acquisition_timeout=15
 )
 ```
 
-**Low Traffic Applications:**
+For write-heavy workloads:
+
 ```python
 pool = SQLiteConnectionPool(
     connection_factory,
-    pool_size=5,  # Fewer connections needed
-    acquisition_timeout=10,  # Quick timeout for responsiveness
-    idle_timeout=1800  # 30 minutes - conserve resources
+    pool_size=5,
+    acquisition_timeout=60
 )
 ```
 

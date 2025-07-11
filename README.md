@@ -10,6 +10,9 @@
 <a href="https://pypi.org/project/aiosqlitepool" target="_blank">
     <img src="https://img.shields.io/pypi/pyversions/aiosqlitepool.svg?color=%2334D058" alt="Supported Python versions">
 </a>
+<a href="https://github.com/slaily/aiosqlitepool/blob/main/LICENSE" target="_blank">
+    <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="Supported Python versions">
+</a>
 </p>
 
 `aiosqlitepool` is a high-performance connection pool for asyncio SQLite applications. By managing a pool of reusable database connections, it eliminates connection overhead and delivers significant performance gains.

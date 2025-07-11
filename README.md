@@ -18,7 +18,7 @@
 
 It's a performance-boosting layer that works *with* an asyncio driver like [aiosqlite](https://github.com/omnilib/aiosqlite), not as a replacement for it.
 
-aiosqlitepool in three points:
+`aiosqlitepool` in three points:
 
 * **Eliminates connection overhead**: It avoids repeated database connection setup (syscalls, memory allocation) and teardown (syscalls, deallocation) by reusing long-lived connections.
 * **Faster queries via "hot" cache**: Long-lived connections keep SQLite's in-memory page cache "hot." This serves frequently requested data directly from memory, speeding up repetitive queries and reducing I/O operations.

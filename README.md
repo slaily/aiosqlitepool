@@ -101,29 +101,91 @@ async def main():
     # Pool is automatically closed
 ```
 
+### High-performance SQLite connection configuration
+
+For high-performance applications, configure your connection factory with optimized SQLite pragmas.
+
+```python
+import aiosqlite
+
+from aiosqlitepool import SQLiteConnectionPool
+
+
+async def sqlite_connection() -> aiosqlite.Connection:
+    # Connect to your database
+    conn = await aiosqlite.connect("your_database.db")
+    # Apply high-performance pragmas
+    await conn.execute("PRAGMA journal_mode = WAL")
+    await conn.execute("PRAGMA synchronous = NORMAL")
+    await conn.execute("PRAGMA cache_size = 10000")
+    await conn.execute("PRAGMA temp_store = MEMORY")
+    await conn.execute("PRAGMA foreign_keys = ON")
+    await conn.execute("PRAGMA mmap_size = 268435456")
+    
+    return conn
+
+
+async def main():
+    # Initialize the connection pool with your high-performance factory
+    pool = SQLiteConnectionPool(
+        connection_factory=sqlite_connection,
+    )
+    
+    # Use the pool
+    async with pool.connection() as conn:
+        # Your database operations here
+        # cursor = await conn.execute("SELECT ...")
+        # rows = await cursor.fetchall()
+        pass
+    
+    # Clean up
+    await pool.close()
+```
+
+**`PRAGMA journal_mode = WAL`** - Writes go to a separate WAL file, reads continue from main database. Multiple readers can work simultaneously with one writer.
+
+**`PRAGMA synchronous = NORMAL`** - SQLite syncs to disk at critical moments, but not after every write. ~2-3x faster writes than `FULL` synchronization.
+
+**`PRAGMA cache_size = 10000`** - Keeps 10,000 database pages (~40MB) in memory. Frequently accessed data served from RAM, not disk
+
+**`PRAGMA temp_store = MEMORY`** - Stores temporary tables, indexes, and sorting operations in RAM. Eliminates disk I/O for temporary operations
+
+**`PRAGMA foreign_keys = ON`** - Enforces foreign key constraints automatically. Prevents data corruption, reduces application-level checks
+
+**`PRAGMA mmap_size = 268435456`** - Maps database file directly into process memory space. Reduces system calls, faster access to large databases
+
+
 ### FastAPI integration
 
-A effective patterns for integrating `aiosqlitepool` with [FastAPI](https://fastapi.tiangolo.com/).
+This section demonstrates an effective pattern for integrating `aiosqlitepool` with [FastAPI](https://fastapi.tiangolo.com/) applications. 
 
-It correctly manages the pool's lifecycle using the `lifespan` context manager.
+The pattern addresses three key requirements:
 
-The pool is stored on the application's state, and a single dependency accesses it via the `request` object.
+1. **Lifecycle Management**: The pool is created during application startup and gracefully closed on shutdown using FastAPI's `lifespan` context manager
+2. **Global Access**: The pool is stored in the application's state, making it accessible to all route handlers
+3. **Dependency Injection**: A reusable dependency function provides clean access to pooled connections with automatic resource management
 
 ```python
 import asyncio
 
-from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import aiosqlite
-from fastapi import Depends, FastAPI, HTTPException, Request
-from aiosqlitepool import SQLiteConnectionPool, Connection
+
+from aiosqlitepool import SQLiteConnectionPool
+from fastapi import (
+    Request,
+    Depends, 
+    FastAPI, 
+    HTTPException, 
+)
 
 
-async def create_connection() -> aiosqlite.Connection:
+async def sqlite_connection() -> aiosqlite.Connection:
     """A factory for creating new connections."""
     conn = await aiosqlite.connect("app.db")
-    conn.row_factory = aiosqlite.Row
+
     return conn
 
 
@@ -133,8 +195,8 @@ async def lifespan(app: FastAPI):
     Manage the connection pool's lifecycle.
     The pool is created when the application starts and gracefully closed when it stops.
     """
-    pool = SQLiteConnectionPool(connection_factory=create_connection, pool_size=10)
-    app.state.pool = pool
+    db_pool = SQLiteConnectionPool(connection_factory=sqlite_connection, pool_size=10)
+    app.state.pool = db_pool
     yield
     await pool.close()
 
@@ -142,30 +204,69 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-async def get_connection(request: Request) -> AsyncGenerator[Connection, None]:
+async def get_db_connection(request: Request) -> AsyncGenerator[Connection]:
     """
     A dependency that provides a connection from the pool.
     It accesses the pool from the application state.
     """
-    pool: SQLiteConnectionPool | None = getattr(request.app.state, "pool", None)
-    if not pool:
-        raise HTTPException(
-            status_code=503, detail="Connection pool is not available"
-        )
+    db_pool = request.app.state.db_pool
 
-    async with pool.connection() as conn:
+    async with db_pool.connection() as conn:
         yield conn
 
 
 @app.get("/users/{user_id}")
 async def get_user(
-    user_id: int, conn: Connection = Depends(get_connection)
+    user_id: int, db_conn: Connection = Depends(get_db_connection)
 ) -> dict[str, any]:
-    cursor = await conn.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    cursor = await db_conn.execute("SELECT * FROM users WHERE id = ?", (user_id,))
     user = await cursor.fetchone()
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    
     return dict(user)
+```
+
+### Configurations
+
+`SQLiteConnectionPool` accepts these parameters:
+
+* `connection_factory` (required): Async function that returns a database connection
+* `pool_size` (int): Maximum number of connections in the pool (default: 20)
+* `acquisition_timeout` (int): Seconds to wait for a connection (default: 30)
+* `idle_timeout` (int): Seconds before idle connections are replaced (default: 86400)
+
+Recommended Settings
+
+**Web API (FastAPI/Django):**
+```python
+pool = SQLiteConnectionPool(
+    connection_factory,
+    pool_size=10,  # Usually enough for most web apps
+    acquisition_timeout=30,  # HTTP timeout compatible
+    idle_timeout=3600  # 1 hour - good for web traffic patterns
+)
+```
+
+**Background Workers/Heavy Load:**
+```python
+pool = SQLiteConnectionPool(
+    connection_factory,
+    pool_size=50,  # More connections for concurrent processing
+    acquisition_timeout=60,  # Longer timeout for batch jobs
+    idle_timeout=7200  # 2 hours - longer running processes
+)
+```
+
+**Low Traffic Applications:**
+```python
+pool = SQLiteConnectionPool(
+    connection_factory,
+    pool_size=5,  # Fewer connections needed
+    acquisition_timeout=10,  # Quick timeout for responsiveness
+    idle_timeout=1800  # 30 minutes - conserve resources
+)
 ```
 
 ## How It Works
@@ -200,47 +301,6 @@ Here's a quick checklist. Use `aiosqlitepool` if:
 You don't need `aiosqlitepool` if your application is:
 - A **short-lived script** that runs a few queries and exits.
 - A **very low-traffic service** with fewer than a few requests per minute.
-
-## Configuration
-
-`SQLiteConnectionPool` accepts these parameters:
-
-* `connection_factory` (required): Async function that returns a database connection
-* `pool_size` (int): Maximum number of connections in the pool (default: 20)
-* `acquisition_timeout` (int): Seconds to wait for a connection (default: 30)
-* `idle_timeout` (int): Seconds before idle connections are replaced (default: 86400)
-
-### Recommended Settings
-
-**Web API (FastAPI/Django):**
-```python
-pool = SQLiteConnectionPool(
-    connection_factory,
-    pool_size=10,  # Usually enough for most web apps
-    acquisition_timeout=30,  # HTTP timeout compatible
-    idle_timeout=3600  # 1 hour - good for web traffic patterns
-)
-```
-
-**Background Workers/Heavy Load:**
-```python
-pool = SQLiteConnectionPool(
-    connection_factory,
-    pool_size=50,  # More connections for concurrent processing
-    acquisition_timeout=60,  # Longer timeout for batch jobs
-    idle_timeout=7200  # 2 hours - longer running processes
-)
-```
-
-**Low Traffic Applications:**
-```python
-pool = SQLiteConnectionPool(
-    connection_factory,
-    pool_size=5,  # Fewer connections needed
-    acquisition_timeout=10,  # Quick timeout for responsiveness
-    idle_timeout=1800  # 30 minutes - conserve resources
-)
-```
 
 ## Benchmarks
 

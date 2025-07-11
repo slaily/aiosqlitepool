@@ -126,7 +126,7 @@ async def sqlite_connection() -> aiosqlite.Connection:
 
 
 async def main():
-    # Initialize the connection pool with your high-performance factory
+    # Initialize the connection pool with your high-performance connection factory
     pool = SQLiteConnectionPool(
         connection_factory=sqlite_connection,
     )
@@ -196,7 +196,7 @@ async def lifespan(app: FastAPI):
     The pool is created when the application starts and gracefully closed when it stops.
     """
     db_pool = SQLiteConnectionPool(connection_factory=sqlite_connection, pool_size=10)
-    app.state.pool = db_pool
+    app.state.db_pool = db_pool
     yield
     await pool.close()
 

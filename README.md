@@ -326,7 +326,7 @@ You don't need `aiosqlitepool` if your application is:
 
 ## Benchmarks
 
-**Soon the benchmark scripta will be uploaded!**
+**Soon the benchmark scripts will be uploaded!**
 
 All benchmarks performed on a realistic database with:
 

@@ -326,30 +326,30 @@ You don't need `aiosqlitepool` if your application is:
 
 ## Benchmarks
 
-All benchmarks performed on a realistic database with:
-
-- 1.2M users 
-- 120K posts 
-- 6M comments
-- 12M likes
-
 ### Heavy load
 
 [Source code](https://github.com/slaily/aiosqlitepool/blob/main/benchmarks/heavy_load.py)
 
-*1,000 concurrent requests across 100 workers*
+Database setup:
+- 10,000 users
+- 100,000 posts
+- 5,000,000 comments
+- 10,000,000 likes
+
+*100,000 complex read operations across 200 workers*
+
+Each operation executes a multi-table JOIN query with aggregations:
+- JOINs across `posts`, `users`, `comments`, and `likes` tables
+- COUNT aggregations for comments and likes per post
+- GROUP BY operations with multiple fields
 
 | Metric | Without Pool | With Pool | Improvement |
 |--------|-------------|-----------|-------------|
-| **Queries/sec** | 3,325 | 5,731 | **+72%** |
-| **Average latency** | 28.98ms | 17.13ms | **-41%** |
-| **Median latency** | 28.10ms | 13.57ms | **-52%** |
-| **P90 latency** | 37.39ms | 18.25ms | **-51%** |
-| **P99 latency** | 42.17ms | 58.76ms | Variable* |
-
-*\*P99 latency shows pool contention under extreme load (100 workers, pool size 100) where 1% of requests must wait for connection availability*
-
-**Key takeaway**: In realistic concurrent scenarios, connection pooling delivers 1.7x throughput improvement and 2x faster response times for 99% of requests.
+| **Throughput** | 3,059 ops/s | 6,069 ops/s | **+98%** |
+| **Average latency** | 65.3ms | 20.5ms | **-69%** |
+| **Median latency** | 63.7ms | 8.1ms | **-87%** |
+| **P90 latency** | 71.4ms | 8.7ms | **-88%** |
+| **P99 latency** | 87.2ms | 11.2ms | **-87%** |
 
 ### Connection overhead
 

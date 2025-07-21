@@ -355,15 +355,13 @@ All benchmarks performed on a realistic database with:
 
 [Source code](https://github.com/slaily/aiosqlitepool/blob/main/benchmarks/connection_overhead.py)
 
-*10,000 simple SELECT operations across 5 workers*
+*10,000 simple SELECT operations across 5 concurrent workers*
 
-| Approach | Avg Latency | Median Latency | Total Time | Operations/sec |
-|----------|-------------|----------------|------------|----------------|
-| **Open/close per query** | 1,019μs | 1,006μs | 2.04s | 4,902 |
-| **Persistent connections** | 396μs | 389μs | 0.79s | 12,658 |
-| **Improvement** | **-61%** | **-61%** | **-61%** | **+158%** |
-
-**Pure connection overhead**: Each connection create/destroy cycle costs **623 microseconds** (1,019 - 396 = 623μs) of pure overhead per database operation.
+| Approach | Throughput | Avg Latency | Median | P90 | P99 | Total Time |
+|----------|------------|-------------|--------|-----|-----|------------|
+| **Open/close per query** | 4,121 ops/s | 1.21ms | 1.20ms | 1.42ms | 1.63ms | 2.4s |
+| **Connection pool** | 12,370 ops/s | 0.40ms | 0.40ms | 0.43ms | 0.48ms | 0.8s |
+| **Improvement** | **+200%** | **-67%** | **-67%** | **-70%** | **-70%** | **-67%** |
 
 ## Compatibility
 

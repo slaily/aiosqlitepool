@@ -39,7 +39,7 @@ It's a performance-boosting layer that works *with* an asyncio driver like [aios
 - [How it works](#how-it-works)
 - [Do you need a connection pool with SQLite?](#do-you-need-a-connection-pool-with-sqlite)
 - [Benchmarks](#benchmarks)
-  - [Load test](#load-test)
+  - [Heavy load](#heavy-load)
   - [Connection overhead](#connection-overhead)
 - [Compatibility](#compatibility)
   - [Officially supported drivers](#officially-supported-drivers)

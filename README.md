@@ -326,8 +326,6 @@ You don't need `aiosqlitepool` if your application is:
 
 ## Benchmarks
 
-**Soon the benchmark scripts will be uploaded!**
-
 All benchmarks performed on a realistic database with:
 
 - 1.2M users 
@@ -335,7 +333,9 @@ All benchmarks performed on a realistic database with:
 - 6M comments
 - 12M likes
 
-### Load test
+### Heavy load
+
+[Source code](https://github.com/slaily/aiosqlitepool/blob/main/benchmarks/heavy_load.py)
 
 *1,000 concurrent requests across 100 workers*
 
@@ -352,6 +352,8 @@ All benchmarks performed on a realistic database with:
 **Key takeaway**: In realistic concurrent scenarios, connection pooling delivers 1.7x throughput improvement and 2x faster response times for 99% of requests.
 
 ### Connection overhead
+
+[Source code](https://github.com/slaily/aiosqlitepool/blob/main/benchmarks/connection_overhead.py)
 
 *10,000 simple SELECT operations across 5 workers*
 
